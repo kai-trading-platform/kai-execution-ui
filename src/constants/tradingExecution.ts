@@ -1,0 +1,1 @@
+export const REAL_CONFIRMATION_TEXT = "EJECUTAR DEMO";
