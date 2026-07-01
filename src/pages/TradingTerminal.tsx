@@ -1,0 +1,1814 @@
+import { useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Bell, Wifi, WifiOff, Search, Plus, ChevronDown, ChevronUp, Loader2, X, Menu, Settings } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useConnectionLatency } from "@/hooks/useConnectionLatency";
+import { usePriceAlerts } from "@/hooks/usePriceAlerts";
+import { AlertsDialog } from "@/components/AlertsDialog";
+import { SettingsDialog } from "@/components/SettingsDialog";
+import { useTerminalSettings } from "@/hooks/useTerminalSettings";
+import { cn } from "@/lib/utils";
+import { useTradingAccounts } from "@/hooks/useTradingAccounts";
+import { useTradingPositions } from "@/hooks/useTradingPositions";
+import { useAccountSymbols } from "@/hooks/useAccountSymbols";
+import { useMarketSocket } from "@/contexts/MarketSocketContext";
+import { usePlaceTradingOrder } from "@/hooks/usePlaceTradingOrder";
+import { useCloseTradingPosition } from "@/hooks/useCloseTradingPosition";
+import { useUpdateTradingPositionStops } from "@/hooks/useUpdateTradingPositionStops";
+import { KaiChart } from "@/components/KaiChart";
+import type { CopyTradingPosition } from "@/modules/copyTrading/types";
+import { toUiPosition } from "@/lib/positionMapping";
+import { formatSymbolDisplay, compareSymbols, symbolIcon } from "@/lib/symbolDisplay";
+import { useMarketCandles } from "@/modules/copyTrading/hooks/useMarketCandles";
+import { toast } from "@/components/ui/sonner";
+import { useConfirm } from "@/components/ConfirmDialogProvider";
+import { REAL_CONFIRMATION_TEXT } from "@/constants/tradingExecution";
+
+/** API contract: the execution backend only accepts market orders today. */
+type TradingOrderSide = "buy" | "sell";
+
+// Max symbols to stream live in the watchlist at once (see effect below for why).
+const WATCHLIST_LIVE_CAP = 20;
+
+type BottomTab = "POSICIONES" | "ORDENES" | "HISTORIAL";
+type OrderType = "MERCADO" | "LIMITE" | "STOP";
+type OrderMode = "regular" | "oneClick" | "risk";
+type Panel = "watchlist" | "trade" | "bottom";
+
+export default function TradingTerminalPage() {
+  const [searchParams] = useSearchParams();
+  const accountId = searchParams.get("account");
+  const { data: accounts = [], isLoading: accountsLoading } = useTradingAccounts();
+
+  const resolvedAccount = useMemo(() => {
+    if (accountId) {
+      const fromList = accounts.find((a: { providerAccountId?: string; id: string }) => a.providerAccountId === accountId);
+      if (fromList) return fromList;
+    }
+    const firstConnected = accounts.find((a: { status?: string }) => a.status === "connected");
+    return firstConnected ?? accounts[0] ?? null;
+  }, [accountId, accounts]);
+
+  const dbAccountId = (resolvedAccount as { id?: string } | null)?.id ?? null;
+  const { data: positions = [], isLoading: positionsLoading } = useTradingPositions(dbAccountId);
+  const { symbols, groupedSymbols, loading: symbolsLoading } = useAccountSymbols(dbAccountId);
+
+  const [selectedSymbol, setSelectedSymbol] = useState<string>("");
+  const [categoryFilter, setCategoryFilter] = useState<string>("TODO");
+  const [orderType, setOrderType] = useState<OrderType>("MERCADO");
+  const [orderMode, setOrderModeState] = useState<OrderMode>(() => {
+    try {
+      return (localStorage.getItem("kai:orderMode") as OrderMode) || "regular";
+    } catch {
+      return "regular";
+    }
+  });
+  const setOrderMode = useCallback((m: OrderMode) => {
+    setOrderModeState(m);
+    try {
+      localStorage.setItem("kai:orderMode", m);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+  const [volume, setVolume] = useState<string>("0.10");
+  const [takeProfitEnabled, setTakeProfitEnabled] = useState<boolean>(false);
+  const [stopLossEnabled, setStopLossEnabled] = useState<boolean>(false);
+  const [takeProfitPrice, setTakeProfitPrice] = useState<string>("");
+  const [stopLossPrice, setStopLossPrice] = useState<string>("");
+  const [bottomTab, setBottomTab] = useState<BottomTab>("POSICIONES");
+  const [bottomOpen, setBottomOpen] = useState<boolean>(true);
+  const [closeAllOpen, setCloseAllOpen] = useState<boolean>(false);
+  const [closingBatch, setClosingBatch] = useState<boolean>(false);
+  const [alertsOpen, setAlertsOpen] = useState<boolean>(false);
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+  const [mobilePanel, setMobilePanel] = useState<Panel | null>(null);
+  const { settings, setSetting } = useTerminalSettings();
+  const [timeframe, setTimeframeState] = useState<string>(() => {
+    try {
+      return localStorage.getItem("kai:timeframe") || "1h";
+    } catch {
+      return "1h";
+    }
+  });
+  const setTimeframe = useCallback((tf: string) => {
+    setTimeframeState(tf);
+    try {
+      localStorage.setItem("kai:timeframe", tf);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // ── Open market tabs (Exness-style) ──────────────────────────────────────
+  // The header shows one tab per open instrument; the active tab drives the
+  // chart + trade panel. Tabs persist per account so they survive a refresh.
+  const [openSymbols, setOpenSymbols] = useState<string[]>([]);
+  useEffect(() => {
+    if (!accountId) return;
+    try {
+      const raw = localStorage.getItem(`kai:tabs:${accountId}`);
+      setOpenSymbols(raw ? (JSON.parse(raw) as string[]) : []);
+    } catch {
+      setOpenSymbols([]);
+    }
+  }, [accountId]);
+  useEffect(() => {
+    if (!accountId) return;
+    try {
+      localStorage.setItem(`kai:tabs:${accountId}`, JSON.stringify(openSymbols));
+    } catch {
+      /* ignore */
+    }
+  }, [accountId, openSymbols]);
+
+  const openSymbol = useCallback((sym: string) => {
+    setOpenSymbols((prev) => (prev.includes(sym) ? prev : [...prev, sym]));
+    setSelectedSymbol(sym);
+    setMobilePanel(null);
+  }, []);
+  const closeSymbol = useCallback((sym: string) => {
+    setOpenSymbols((prev) => {
+      const idx = prev.indexOf(sym);
+      const next = prev.filter((s) => s !== sym);
+      setSelectedSymbol((cur) => {
+        if (cur !== sym) return cur;
+        if (next.length === 0) return "";
+        return next[Math.min(idx, next.length - 1)];
+      });
+      return next;
+    });
+  }, []);
+
+  const { ticks: liveTicks, subscribe: socketSubscribe, unsubscribe: socketUnsubscribe, isConnected: marketConnected } = useMarketSocket();
+  const placeOrder = usePlaceTradingOrder();
+  const closePosition = useCloseTradingPosition();
+  const updateStops = useUpdateTradingPositionStops();
+
+  useEffect(() => {
+    document.title = `Kai Trading Terminal${accountId ? ` - ${accountId}` : ""}`;
+  }, [accountId]);
+
+  // ── Connection quality (internet health) ────────────────────────────────
+  // Pings the backend every 5s. Thresholds are lenient on purpose: a local dev
+  // round-trip through the Vite proxy is routinely 100-300ms and is NOT a slow
+  // connection, so only flag "weak" past 600ms and "bad" past 1.2s / failure.
+  // We deliberately ignore the market socket here — it can be legitimately down
+  // (e.g. weekends) without the user's internet being bad.
+  const latency = useConnectionLatency("/api/health", 5000);
+  const connQuality: "good" | "weak" | "bad" = useMemo(() => {
+    if (latency.status === "measuring") return "good";
+    if (latency.status === "error" || latency.latencyMs == null) return "bad";
+    if (latency.latencyMs >= 1200) return "bad";
+    if (latency.latencyMs >= 600) return "weak";
+    return "good";
+  }, [latency.status, latency.latencyMs]);
+  const prevQualityRef = useRef<"good" | "weak" | "bad">("good");
+  useEffect(() => {
+    const prev = prevQualityRef.current;
+    if (prev !== connQuality) {
+      if (connQuality === "bad") {
+        toast.error("Sin conexión estable", {
+          description: "Tu internet falla. Ten precaución: las órdenes podrían no enviarse.",
+        });
+      } else if (connQuality === "weak") {
+        toast.warning("Conexión lenta", {
+          description: "La conexión va lenta. Opera con precaución, puede haber retrasos.",
+        });
+      } else if (prev === "bad") {
+        toast.success("Conexión restablecida", { description: "Tu internet volvió a la normalidad." });
+      }
+      prevQualityRef.current = connQuality;
+    }
+  }, [connQuality]);
+
+  // ── Price alerts ─────────────────────────────────────────────────────────
+  const {
+    alerts: priceAlerts,
+    triggered: triggeredAlerts,
+    unread: alertsUnread,
+    addAlert,
+    removeAlert,
+    triggerAlert,
+    markRead: markAlertsRead,
+    clearTriggered: clearTriggeredAlerts,
+  } = usePriceAlerts();
+
+  const getSymbolPrice = useCallback(
+    (sym: string): number | null => {
+      if (!dbAccountId) return null;
+      const t = liveTicks.get(`${dbAccountId}::${sym}`);
+      const pr = t?.last ?? t?.bid ?? null;
+      return pr && pr > 0 ? pr : null;
+    },
+    [dbAccountId, liveTicks],
+  );
+
+  // Short synthesized beep (Web Audio) for sound effects — no audio asset needed.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const playBeep = useCallback((freq = 880, ms = 160) => {
+    try {
+      const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!Ctx) return;
+      if (!audioCtxRef.current) audioCtxRef.current = new Ctx();
+      const ctx = audioCtxRef.current;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + ms / 1000);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + ms / 1000);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  // Stream ticks for any symbol that has an active alert (besides the watchlist).
+  useEffect(() => {
+    if (!dbAccountId || !marketConnected || priceAlerts.length === 0) return;
+    const syms = Array.from(new Set(priceAlerts.map((a) => a.symbol)));
+    syms.forEach((s) => socketSubscribe(dbAccountId, s));
+    return () => syms.forEach((s) => socketUnsubscribe(dbAccountId, s));
+  }, [priceAlerts, dbAccountId, marketConnected, socketSubscribe, socketUnsubscribe]);
+
+  // Fire alerts when the live price crosses their target.
+  useEffect(() => {
+    if (!dbAccountId || priceAlerts.length === 0) return;
+    for (const a of priceAlerts) {
+      const t = liveTicks.get(`${dbAccountId}::${a.symbol}`);
+      const price = t?.last ?? t?.bid;
+      if (price == null || price <= 0) continue;
+      const hit = a.direction === "up" ? price >= a.target : price <= a.target;
+      if (hit) {
+        triggerAlert(a, price);
+        if (settings.soundAlerts) playBeep();
+        toast.success(
+          `Alerta: ${formatSymbolDisplay(a.symbol)} ${a.direction === "up" ? "subió a" : "bajó a"} ${a.target}`,
+          { description: `Precio actual ${price.toFixed(price < 20 ? 5 : 2)}` },
+        );
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          try {
+            new Notification("Alerta de precio · Kai", {
+              body: `${formatSymbolDisplay(a.symbol)} alcanzó ${a.target}`,
+            });
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+  }, [liveTicks, dbAccountId, priceAlerts, triggerAlert, settings.soundAlerts, playBeep]);
+
+  const openAlerts = useCallback(() => {
+    setAlertsOpen(true);
+    markAlertsRead();
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      void Notification.requestPermission();
+    }
+  }, [markAlertsRead]);
+
+  const symbolList = useMemo(() => {
+    const result: Array<{ name: string; display: string; category: string }> = [];
+    for (const [category, list] of Object.entries(groupedSymbols ?? {})) {
+      for (const sym of list as Array<{ name: string; description?: string | null }>) {
+        result.push({ name: sym.name, display: formatSymbolDisplay(sym.name), category });
+      }
+    }
+    // Most-liquid instruments first (BTC, ETH, XAU, EUR…) so the watchlist is
+    // useful and the default selection has a live price, instead of starting
+    // alphabetically on an illiquid token with no price.
+    result.sort(compareSymbols);
+    return result;
+  }, [groupedSymbols]);
+
+  const filteredSymbols = useMemo(() => {
+    return symbolList.filter((s) => categoryFilter === "TODO" || s.category === categoryFilter);
+  }, [symbolList, categoryFilter]);
+
+  useEffect(() => {
+    if (selectedSymbol) return;
+    if (openSymbols.length > 0) {
+      setSelectedSymbol(openSymbols[0]);
+      return;
+    }
+    if (filteredSymbols.length > 0) {
+      const first = filteredSymbols[0].name;
+      setSelectedSymbol(first);
+      setOpenSymbols([first]);
+    }
+  }, [filteredSymbols, selectedSymbol, openSymbols]);
+
+  // Live-price the watchlist for only a bounded set of symbols. The backend
+  // polls every subscribed symbol against a single (serial) MT5 terminal every
+  // 500ms, so subscribing to all ~355 symbols saturates it, trips the bridge
+  // circuit breaker, and then even chart candles fail ("Sin datos"). Cap it.
+  const liveWatchlistSymbols = useMemo(
+    () => filteredSymbols.slice(0, WATCHLIST_LIVE_CAP).map((s) => s.name),
+    [filteredSymbols],
+  );
+
+  useEffect(() => {
+    if (!dbAccountId || !marketConnected || liveWatchlistSymbols.length === 0) return;
+    liveWatchlistSymbols.forEach((name) => socketSubscribe(dbAccountId, name));
+    return () => {
+      liveWatchlistSymbols.forEach((name) => socketUnsubscribe(dbAccountId, name));
+    };
+  }, [liveWatchlistSymbols, dbAccountId, marketConnected, socketSubscribe, socketUnsubscribe]);
+
+  useEffect(() => {
+    if (!dbAccountId || !marketConnected) return;
+    const syms = Array.from(new Set([selectedSymbol, ...openSymbols].filter(Boolean)));
+    if (syms.length === 0) return;
+    syms.forEach((s) => socketSubscribe(dbAccountId, s));
+    return () => syms.forEach((s) => socketUnsubscribe(dbAccountId, s));
+  }, [selectedSymbol, openSymbols, dbAccountId, marketConnected, socketSubscribe, socketUnsubscribe]);
+
+  // Fallback price from the latest candle so the trade panel is usable even
+  // before the first live tick arrives (or while a symbol is quiet). Shares the
+  // chart's React Query cache, so it's not an extra request. Market orders fill
+  // at the broker's live price regardless — this is just the reference shown.
+  const { data: fallbackCandles = [] } = useMarketCandles(dbAccountId, selectedSymbol, timeframe, 2);
+  const fallbackPrice = fallbackCandles[fallbackCandles.length - 1]?.close ?? 0;
+
+  const selectedTick = dbAccountId ? liveTicks.get(`${dbAccountId}::${selectedSymbol}`) ?? null : null;
+  const bidPrice = selectedTick?.bid ?? fallbackPrice;
+  const askPrice = selectedTick?.ask ?? fallbackPrice;
+  const lastPrice = selectedTick?.last ?? bidPrice ?? askPrice;
+  const spread = selectedTick && selectedTick.bid > 0 && selectedTick.ask > 0 ? selectedTick.ask - selectedTick.bid : 0;
+  const notional = (parseFloat(volume) || 0) * bidPrice;
+
+  const tpNum = parseFloat(takeProfitPrice) || 0;
+  const slNum = parseFloat(stopLossPrice) || 0;
+  const risk = slNum > 0 ? Math.abs(lastPrice - slNum) * (parseFloat(volume) || 0) : 0;
+  const reward = tpNum > 0 ? Math.abs(tpNum - lastPrice) * (parseFloat(volume) || 0) : 0;
+
+  const errorMessage = (e: unknown, fallback: string) => {
+    const raw = e instanceof Error && e.message ? e.message : "";
+    // Surface broker market-hours rejections in plain language instead of the
+    // raw "MT5 bridge ... 503 close_rejected" string. Forex/indices are closed
+    // on weekends/daily breaks; only crypto trades 24/7.
+    if (/close_rejected|market.*closed|mercado.*cerrad|trade.*disabled|10018|10019|market is closed/i.test(raw)) {
+      return "Mercado cerrado para este instrumento ahora mismo. Intenta cuando abra (forex/índices cierran fines de semana; cripto opera 24/7).";
+    }
+    if (/modify_rejected|invalid_stops|10016|too close/i.test(raw)) {
+      return "El broker rechazó los niveles: revisa que el SL/TP esté del lado correcto y no demasiado cerca del precio.";
+    }
+    return raw || fallback;
+  };
+
+  const confirm = useConfirm();
+
+  const handlePlaceOrder = useCallback(
+    async (side: TradingOrderSide) => {
+      if (!dbAccountId || !selectedSymbol || bidPrice <= 0) return;
+      const lots = parseFloat(volume) || 0;
+      // One-click mode fires immediately without the confirmation dialog (Exness
+      // "Formulario con un clic"). Regular/risk modes still confirm.
+      if (orderMode !== "oneClick") {
+        const ok = await confirm({
+          title: `${side === "buy" ? "COMPRAR" : "VENDER"} ${formatSymbolDisplay(selectedSymbol)}`,
+          description: `Operación REAL a mercado: ${lots} lote(s) de ${formatSymbolDisplay(selectedSymbol)}.\n¿Confirmas la ejecución?`,
+          confirmText: side === "buy" ? "Comprar" : "Vender",
+          destructive: side === "sell",
+        });
+        if (!ok) return;
+      }
+      // The execution backend only supports market orders; the order-type
+      // selector is informational and Market is the only enabled option.
+      try {
+        await placeOrder.mutateAsync({
+          tradingAccountId: dbAccountId,
+          symbol: selectedSymbol,
+          side,
+          type: "market",
+          volume: lots,
+          takeProfit: takeProfitEnabled && tpNum > 0 ? tpNum : 0,
+          stopLoss: stopLossEnabled && slNum > 0 ? slNum : 0,
+          confirmationText: REAL_CONFIRMATION_TEXT,
+        });
+        toast.success(
+          `${side === "buy" ? "Compra" : "Venta"} ejecutada · ${lots} lotes ${selectedSymbol}`,
+        );
+      } catch (e) {
+        toast.error(errorMessage(e, "No se pudo ejecutar la orden"));
+      }
+    },
+    [confirm, dbAccountId, selectedSymbol, bidPrice, placeOrder, volume, takeProfitEnabled, tpNum, stopLossEnabled, slNum, orderMode],
+  );
+
+  const handleClosePosition = useCallback(
+    async (position: CopyTradingPosition) => {
+      if (!dbAccountId) return;
+      const ok = await confirm({
+        title: `Cerrar posición #${position.id}`,
+        description: `Se cerrará la posición de ${formatSymbolDisplay(position.symbol)} a precio de mercado. Operación REAL.`,
+        confirmText: "Cerrar posición",
+        destructive: true,
+      });
+      if (!ok) return;
+      try {
+        await closePosition.mutateAsync({
+          ticket: String(position.id),
+          tradingAccountId: dbAccountId,
+          dryRun: false,
+          confirmationText: REAL_CONFIRMATION_TEXT,
+        });
+        toast.success(`Posición #${position.id} cerrada`);
+      } catch (e) {
+        toast.error(errorMessage(e, "No se pudo cerrar la posición"));
+      }
+    },
+    [confirm, dbAccountId, closePosition],
+  );
+
+  const closePositionsBatch = useCallback(
+    async (list: CopyTradingPosition[]) => {
+      if (!dbAccountId || list.length === 0) return;
+      setClosingBatch(true);
+      let ok = 0;
+      let failed = 0;
+      let lastError: unknown = null;
+      for (const position of list) {
+        try {
+          await closePosition.mutateAsync({
+            ticket: String(position.id),
+            tradingAccountId: dbAccountId,
+            dryRun: false,
+            confirmationText: REAL_CONFIRMATION_TEXT,
+          });
+          ok += 1;
+        } catch (e) {
+          failed += 1;
+          lastError = e;
+        }
+      }
+      setClosingBatch(false);
+      setCloseAllOpen(false);
+      if (ok > 0) toast.success(`${ok} posición(es) cerrada(s)${failed ? `, ${failed} fallida(s)` : ""}`);
+      else if (failed > 0) toast.error(errorMessage(lastError, `No se pudieron cerrar ${failed} posición(es)`));
+    },
+    [dbAccountId, closePosition],
+  );
+
+  const handleUpdateStops = useCallback(
+    async (position: CopyTradingPosition, sl?: number | null, tp?: number | null) => {
+      if (!dbAccountId) return;
+      const isBuy = position.side === "LONG";
+      const ref = position.currentPrice || position.avgPrice;
+      const tpv = tp ?? 0;
+      const slv = sl ?? 0;
+      // Validate sides before the broker rejects with "modify_rejected".
+      if (tpv > 0 && ref > 0 && ((isBuy && tpv <= ref) || (!isBuy && tpv >= ref))) {
+        toast.error("Take Profit inválido", { description: `Debe estar ${isBuy ? "por encima" : "por debajo"} del precio actual (${ref}).` });
+        return;
+      }
+      if (slv > 0 && ref > 0 && ((isBuy && slv >= ref) || (!isBuy && slv <= ref))) {
+        toast.error("Stop Loss inválido", { description: `Debe estar ${isBuy ? "por debajo" : "por encima"} del precio actual (${ref}).` });
+        return;
+      }
+      try {
+        await updateStops.mutateAsync({
+          ticket: String(position.id),
+          tradingAccountId: dbAccountId,
+          stopLoss: slv,
+          takeProfit: tpv,
+          dryRun: false,
+          confirmationText: REAL_CONFIRMATION_TEXT,
+        });
+        toast.success(`Stops actualizados · #${position.id}`);
+      } catch (e) {
+        toast.error(errorMessage(e, "No se pudieron actualizar los stops"));
+      }
+    },
+    [dbAccountId, updateStops],
+  );
+
+  const uiPositions = useMemo<CopyTradingPosition[]>(
+    () =>
+      positions
+        .map((p) => toUiPosition(p, resolvedAccount?.name ?? ""))
+        // Newest trade first (most recent open time at the top).
+        .sort((a, b) => {
+          const ta = a.openedAtIso ? Date.parse(a.openedAtIso) : 0;
+          const tb = b.openedAtIso ? Date.parse(b.openedAtIso) : 0;
+          return tb - ta;
+        }),
+    [positions, resolvedAccount],
+  );
+
+  const totalPnl = useMemo(
+    () => uiPositions.reduce((acc, p) => acc + (p.openPnlUsd ?? 0), 0),
+    [uiPositions],
+  );
+
+  // Beep when a position disappears (closed by TP/SL/SO or manually). Reset the
+  // baseline on account switch so changing accounts never sounds a false close.
+  const prevPosRef = useRef<{ account: string | null; ids: Set<string> }>({ account: null, ids: new Set() });
+  useEffect(() => {
+    if (positionsLoading) return;
+    const ids = new Set(uiPositions.map((p) => String(p.id)));
+    const prev = prevPosRef.current;
+    if (prev.account === dbAccountId && prev.ids.size > 0) {
+      let closed = false;
+      prev.ids.forEach((id) => {
+        if (!ids.has(id)) closed = true;
+      });
+      if (closed && settings.soundClose) playBeep(523, 220);
+    }
+    prevPosRef.current = { account: dbAccountId, ids };
+  }, [uiPositions, dbAccountId, positionsLoading, settings.soundClose, playBeep]);
+
+  return (
+    <div className="flex flex-col h-[100dvh] w-screen bg-[#0a0e16] text-white overflow-hidden">
+      <TopHeader
+        accountName={resolvedAccount?.name ?? (accountsLoading ? "Cargando..." : "Sin cuenta")}
+        accountNumber={accountId ?? resolvedAccount?.providerAccountId ?? "—"}
+        accounts={accounts as Array<{ id: string; name: string; providerAccountId?: string | null; status?: string }>}
+        onSelect={(id) => {
+          const url = new URL(window.location.href);
+          url.searchParams.set("account", id);
+          window.location.href = url.toString();
+        }}
+        marketConnected={marketConnected}
+        connQuality={connQuality}
+        latencyMs={latency.latencyMs}
+        alertsUnread={alertsUnread}
+        onBellClick={openAlerts}
+        onSettingsClick={() => setSettingsOpen(true)}
+        onToggleMobilePanel={(p) => setMobilePanel((cur) => (cur === p ? null : p))}
+        activeMobilePanel={mobilePanel}
+        equity={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
+        openSymbols={openSymbols}
+        selectedSymbol={selectedSymbol}
+        onSelectTab={setSelectedSymbol}
+        onCloseTab={closeSymbol}
+        onAddTab={openSymbol}
+        symbolList={symbolList}
+        getPrice={getSymbolPrice}
+      />
+      <CloseAllDialog
+        open={closeAllOpen}
+        onOpenChange={setCloseAllOpen}
+        positions={uiPositions}
+        busy={closingBatch}
+        onConfirm={closePositionsBatch}
+      />
+      <AlertsDialog
+        open={alertsOpen}
+        onOpenChange={setAlertsOpen}
+        symbols={symbolList}
+        defaultSymbol={selectedSymbol}
+        getPrice={getSymbolPrice}
+        alerts={priceAlerts}
+        triggered={triggeredAlerts}
+        onAdd={(sym, target) => addAlert(sym, target, getSymbolPrice(sym) ?? target)}
+        onRemove={removeAlert}
+        onClearTriggered={clearTriggeredAlerts}
+      />
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        settings={settings}
+        setSetting={setSetting}
+      />
+      <div className="flex flex-1 overflow-hidden relative">
+        <aside
+          className={cn(
+            "shrink-0 border-r border-white/10 bg-[#0b1019] flex flex-col overflow-hidden transition-all duration-200",
+            "hidden md:flex",
+            "w-64",
+          )}
+        >
+          <Watchlist
+            items={filteredSymbols}
+            ticks={liveTicks as ReadonlyMap<string, { bid: number; ask: number; last: number }>}
+            dbAccountId={dbAccountId}
+            loading={symbolsLoading}
+            selected={selectedSymbol}
+            onSelect={openSymbol}
+            categoryFilter={categoryFilter}
+            onCategoryChange={setCategoryFilter}
+          />
+        </aside>
+
+        {mobilePanel === "watchlist" && (
+          <div className="md:hidden absolute inset-0 z-40 bg-[#0b1019] flex flex-col">
+            <div className="flex items-center justify-between p-3 border-b border-white/10">
+              <span className="text-sm font-semibold">Watchlist</span>
+              <Button variant="ghost" size="icon" onClick={() => setMobilePanel(null)} className="h-8 w-8">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <Watchlist
+              items={filteredSymbols}
+              ticks={liveTicks as ReadonlyMap<string, { bid: number; ask: number; last: number }>}
+              dbAccountId={dbAccountId}
+              loading={symbolsLoading}
+              selected={selectedSymbol}
+              onSelect={openSymbol}
+              categoryFilter={categoryFilter}
+              onCategoryChange={setCategoryFilter}
+            />
+          </div>
+        )}
+
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          <KaiChart
+            symbol={selectedSymbol}
+            accountId={dbAccountId}
+            positions={uiPositions}
+            timeframe={timeframe}
+            onTimeframeChange={setTimeframe}
+            showPositions={settings.showPositions}
+            showTpSl={settings.showTpSl}
+            timezone={settings.timezone}
+          />
+          <div className={cn("border-t border-white/10 bg-[#0b1019] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
+            <div className="flex items-center justify-between border-b border-white/10 px-2 sm:px-3 py-1.5">
+              <div className="flex gap-2 sm:gap-4 text-xs overflow-x-auto">
+                {(["POSICIONES", "ORDENES", "HISTORIAL"] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => {
+                      setBottomTab(t);
+                      setBottomOpen(true);
+                    }}
+                    className={cn(
+                      "font-semibold tracking-wider pb-1 transition-colors whitespace-nowrap",
+                      bottomTab === t && bottomOpen ? "text-white border-b-2 border-[#4c82e3]" : "text-white/50 hover:text-white/80",
+                    )}
+                  >
+                    {t === "POSICIONES"
+                      ? `POSICIONES (${positions.length})`
+                      : t === "ORDENES"
+                        ? "ÓRDENES (0)"
+                        : "HISTORIAL"}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2">
+                {bottomTab === "POSICIONES" && positions.length > 0 && bottomOpen && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCloseAllOpen(true)}
+                    className="h-7 text-xs border-[#ef5350]/40 text-[#ef5350] hover:bg-[#ef5350]/10 hover:text-[#ef6863]"
+                  >
+                    CERRAR TODO
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setBottomOpen((v) => !v)}
+                >
+                  {bottomOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+                </Button>
+              </div>
+            </div>
+            {bottomOpen && (
+              <BottomPanel
+                positions={uiPositions}
+                loading={positionsLoading}
+                activeTab={bottomTab}
+                totalPnl={totalPnl}
+                balance={(resolvedAccount as { balance?: number | null } | null)?.balance ?? null}
+                equity={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
+                marginFree={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
+                onClose={handleClosePosition}
+                onUpdateStops={handleUpdateStops}
+              />
+            )}
+          </div>
+        </div>
+
+        <aside
+          className={cn(
+            "shrink-0 border-l border-white/10 bg-[#0b1019] flex flex-col overflow-hidden transition-all duration-200",
+            "hidden lg:flex",
+            "w-80",
+          )}
+        >
+          <TradePanel
+            bidPrice={bidPrice}
+            askPrice={askPrice}
+            spread={spread}
+            symbol={selectedSymbol}
+            orderType={orderType}
+            setOrderType={setOrderType}
+            volume={volume}
+            setVolume={setVolume}
+            takeProfitEnabled={takeProfitEnabled}
+            setTakeProfitEnabled={setTakeProfitEnabled}
+            takeProfitPrice={takeProfitPrice}
+            setTakeProfitPrice={setTakeProfitPrice}
+            stopLossEnabled={stopLossEnabled}
+            setStopLossEnabled={setStopLossEnabled}
+            stopLossPrice={stopLossPrice}
+            setStopLossPrice={setStopLossPrice}
+            notional={notional}
+            risk={risk}
+            reward={reward}
+            onSubmit={handlePlaceOrder}
+            submitting={placeOrder.isPending}
+            lastPrice={lastPrice}
+            orderMode={orderMode}
+            setOrderMode={setOrderMode}
+            capital={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
+            autoTpSl={settings.autoTpSl}
+          />
+        </aside>
+
+        {mobilePanel === "trade" && (
+          <div className="lg:hidden absolute inset-0 z-40 bg-[#0b1019] flex flex-col overflow-y-auto">
+            <div className="flex items-center justify-between p-3 border-b border-white/10 sticky top-0 bg-[#0b1019] z-10">
+              <span className="text-sm font-semibold">Operar</span>
+              <Button variant="ghost" size="icon" onClick={() => setMobilePanel(null)} className="h-8 w-8">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <TradePanel
+              bidPrice={bidPrice}
+              askPrice={askPrice}
+              spread={spread}
+              symbol={selectedSymbol}
+              orderType={orderType}
+              setOrderType={setOrderType}
+              volume={volume}
+              setVolume={setVolume}
+              takeProfitEnabled={takeProfitEnabled}
+              setTakeProfitEnabled={setTakeProfitEnabled}
+              takeProfitPrice={takeProfitPrice}
+              setTakeProfitPrice={setTakeProfitPrice}
+              stopLossEnabled={stopLossEnabled}
+              setStopLossEnabled={setStopLossEnabled}
+              stopLossPrice={stopLossPrice}
+              setStopLossPrice={setStopLossPrice}
+              notional={notional}
+              risk={risk}
+              reward={reward}
+              onSubmit={handlePlaceOrder}
+              submitting={placeOrder.isPending}
+              lastPrice={lastPrice}
+              orderMode={orderMode}
+              setOrderMode={setOrderMode}
+              capital={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
+              autoTpSl={settings.autoTpSl}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="md:hidden flex items-center justify-around border-t border-white/10 bg-[#0b1019] py-2 shrink-0">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setMobilePanel((cur) => (cur === "watchlist" ? null : "watchlist"))}
+          className={cn("flex flex-col items-center text-[10px] h-auto py-1 px-3", mobilePanel === "watchlist" ? "text-emerald-400" : "text-white/60")}
+        >
+          <Search className="h-4 w-4 mb-0.5" />
+          Símbolos
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => setMobilePanel((cur) => (cur === "trade" ? null : "trade"))}
+          className={cn("flex flex-col items-center text-[10px] h-auto py-1 px-3", mobilePanel === "trade" ? "text-emerald-400" : "text-white/60")}
+        >
+          <Menu className="h-4 w-4 mb-0.5" />
+          Operar
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => {
+            setBottomTab("POSICIONES");
+            setBottomOpen(true);
+          }}
+          className="flex flex-col items-center text-[10px] h-auto py-1 px-3 text-white/60"
+        >
+          <Badge className="bg-emerald-500/15 text-emerald-400 border-0 px-2 mb-0.5">{positions.length}</Badge>
+          Posiciones
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function TopHeader({
+  accountName,
+  accountNumber,
+  accounts,
+  onSelect,
+  marketConnected,
+  connQuality,
+  latencyMs,
+  alertsUnread,
+  onBellClick,
+  onSettingsClick,
+  onToggleMobilePanel,
+  activeMobilePanel,
+  equity,
+  openSymbols,
+  selectedSymbol,
+  onSelectTab,
+  onCloseTab,
+  onAddTab,
+  symbolList,
+  getPrice,
+}: {
+  accountName: string;
+  accountNumber: string;
+  accounts: Array<{ id: string; name: string; providerAccountId?: string | null; status?: string }>;
+  onSelect: (id: string) => void;
+  marketConnected: boolean;
+  connQuality: "good" | "weak" | "bad";
+  latencyMs: number | null;
+  alertsUnread: number;
+  onBellClick: () => void;
+  onSettingsClick: () => void;
+  onToggleMobilePanel: (p: Panel) => void;
+  activeMobilePanel: Panel | null;
+  equity: number | null;
+  openSymbols: string[];
+  selectedSymbol: string;
+  onSelectTab: (sym: string) => void;
+  onCloseTab: (sym: string) => void;
+  onAddTab: (sym: string) => void;
+  symbolList: Array<{ name: string; display: string; category: string }>;
+  getPrice: (sym: string) => number | null;
+}) {
+  const fmtUsd = (v: number | null) =>
+    v == null || !Number.isFinite(v)
+      ? "—"
+      : v.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  return (
+    <header className="flex items-center justify-between border-b border-white/10 bg-[#0b1019] px-3 sm:px-4 py-2 text-sm shrink-0">
+      <div className="flex items-center gap-3 sm:gap-6 min-w-0">
+        <div className="flex items-center gap-2 shrink-0">
+          <img src="/apple-touch-icon.png" alt="Kai" className="h-7 w-7 rounded-lg" />
+          <span className="text-lg sm:text-xl font-bold tracking-tight">Kai</span>
+        </div>
+        <div className="relative" ref={ref}>
+          <button
+            onClick={() => setOpen((v) => !v)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/10 bg-[#121826] hover:border-white/20 cursor-pointer min-w-0 transition-colors"
+          >
+            <div className="text-left min-w-0">
+              <div className="text-[10px] text-white/45 truncate max-w-[120px] sm:max-w-none">
+                {accountName}
+              </div>
+              <div className="text-[13px] font-semibold truncate tabular-nums">#{accountNumber}</div>
+            </div>
+            <ChevronDown className="h-3.5 w-3.5 text-white/40 shrink-0" />
+          </button>
+          {open && accounts.length > 0 && (
+            <div className="absolute top-full left-0 mt-1 w-64 max-w-[calc(100vw-2rem)] bg-[#0b1019] border border-white/10 rounded-md shadow-xl z-50">
+              <div className="max-h-80 overflow-y-auto">
+                {accounts.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => {
+                      setOpen(false);
+                      onSelect(a.providerAccountId ?? a.id);
+                    }}
+                    className="w-full flex items-center justify-between px-3 py-2 hover:bg-white/5 text-left"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-xs text-white/70 truncate">{a.name}</div>
+                      <div className="text-[10px] text-white/40">#{a.providerAccountId ?? a.id}</div>
+                    </div>
+                    {a.status === "connected" && (
+                      <span className="h-2 w-2 rounded-full bg-emerald-400 shrink-0 ml-2" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <MarketTabs
+        openSymbols={openSymbols}
+        selected={selectedSymbol}
+        onSelect={onSelectTab}
+        onClose={onCloseTab}
+        onAdd={onAddTab}
+        symbolList={symbolList}
+        getPrice={getPrice}
+      />
+
+      <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+        <div className="hidden md:block text-right mr-1">
+          <div className="text-white/45 uppercase tracking-wider text-[9px] leading-tight">Equity</div>
+          <div className="font-semibold text-emerald-400 tabular-nums text-[13px] leading-tight">{fmtUsd(equity)}</div>
+        </div>
+        <button
+          onClick={onSettingsClick}
+          className="flex items-center justify-center h-7 w-7 rounded-md text-white/60 hover:bg-white/5 hover:text-white"
+          title="Configuración"
+          aria-label="Configuración"
+        >
+          <Settings className="h-4 w-4" />
+        </button>
+        <button
+          onClick={onBellClick}
+          className="relative flex items-center justify-center h-7 w-7 rounded-md text-white/60 hover:bg-white/5 hover:text-white"
+          title="Alertas de precio"
+          aria-label="Alertas de precio"
+        >
+          <Bell className="h-4 w-4" />
+          {alertsUnread > 0 && (
+            <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#ef5350] px-1 text-[9px] font-bold text-white tabular-nums">
+              {alertsUnread > 9 ? "9+" : alertsUnread}
+            </span>
+          )}
+        </button>
+        {(() => {
+          const cfg = {
+            good: { color: "text-[#2ed68d]", title: "Buena conexión", desc: latencyMs != null ? `Conexión estable · ${latencyMs} ms` : "Conexión estable" },
+            weak: { color: "text-[#e3b341]", title: "Conexión lenta", desc: `Tu conexión va lenta${latencyMs != null ? ` · ${latencyMs} ms` : ""}. Opera con precaución ⚠️` },
+            bad: { color: "text-[#ef5350]", title: "Sin conexión estable", desc: "Tu internet falla. Ten precaución: las órdenes podrían no enviarse ⚠️" },
+          }[connQuality];
+          const Icon = connQuality === "bad" ? WifiOff : Wifi;
+          return (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button className={cn("flex items-center justify-center h-7 w-7 rounded-md hover:bg-white/5 transition-colors", cfg.color)} aria-label={cfg.title}>
+                  <Icon className={cn("h-4 w-4", connQuality === "weak" && "animate-pulse")} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[220px] text-center">
+                <p className="font-semibold">{cfg.title}</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">{cfg.desc}</p>
+              </TooltipContent>
+            </Tooltip>
+          );
+        })()}
+      </div>
+    </header>
+  );
+}
+
+// Exness-style open-market tabs that live in the header. Each tab drives the
+// chart + trade panel; "+" opens an instrument picker to add another market.
+function MarketTabs({
+  openSymbols,
+  selected,
+  onSelect,
+  onClose,
+  onAdd,
+  symbolList,
+  getPrice,
+}: {
+  openSymbols: string[];
+  selected: string;
+  onSelect: (sym: string) => void;
+  onClose: (sym: string) => void;
+  onAdd: (sym: string) => void;
+  symbolList: Array<{ name: string; display: string; category: string }>;
+  getPrice: (sym: string) => number | null;
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setPickerOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const base = q
+      ? symbolList.filter(
+          (s) => s.display.toLowerCase().includes(q) || s.name.toLowerCase().includes(q),
+        )
+      : symbolList;
+    return base.slice(0, 60);
+  }, [symbolList, query]);
+
+  const fmtPrice = (sym: string): string => {
+    const p = getPrice(sym);
+    if (p == null) return "—";
+    const dec = p >= 100 ? 2 : p >= 1 ? 4 : 5;
+    return p.toLocaleString("en-US", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  };
+
+  return (
+    <div className="flex-1 min-w-0 flex items-center gap-1 overflow-x-auto px-1 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+      {openSymbols.map((sym) => {
+        const ic = symbolIcon(sym);
+        const active = sym === selected;
+        return (
+          <div
+            key={sym}
+            onClick={() => onSelect(sym)}
+            className={cn(
+              "group flex items-center gap-2 pl-2 pr-1.5 py-1 rounded-lg border cursor-pointer shrink-0 transition-colors",
+              active
+                ? "border-[#4c82e3]/50 bg-[#4c82e3]/10"
+                : "border-transparent hover:bg-white/5",
+            )}
+          >
+            <span
+              className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0"
+              style={{ background: ic.bg, color: ic.fg }}
+            >
+              {ic.glyph}
+            </span>
+            <div className="flex flex-col leading-none min-w-0">
+              <span className="text-[12px] font-semibold truncate max-w-[90px]">
+                {formatSymbolDisplay(sym)}
+              </span>
+              <span className="text-[10px] text-white/45 tabular-nums">{fmtPrice(sym)}</span>
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose(sym);
+              }}
+              className="flex h-4 w-4 items-center justify-center rounded text-white/30 hover:text-white hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+              aria-label={`Cerrar ${formatSymbolDisplay(sym)}`}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        );
+      })}
+
+      <div className="relative shrink-0" ref={ref}>
+        <button
+          onClick={() => setPickerOpen((v) => !v)}
+          className="flex h-7 w-7 items-center justify-center rounded-lg text-white/50 hover:bg-white/5 hover:text-white transition-colors"
+          aria-label="Agregar mercado"
+          title="Agregar mercado"
+        >
+          <Plus className="h-4 w-4" />
+        </button>
+        {pickerOpen && (
+          <div className="absolute top-full left-0 mt-1 w-72 max-w-[calc(100vw-2rem)] bg-[#0b1019] border border-white/10 rounded-lg shadow-xl z-50 overflow-hidden">
+            <div className="p-2 border-b border-white/10">
+              <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-[#121826]">
+                <Search className="h-3.5 w-3.5 text-white/40 shrink-0" />
+                <input
+                  autoFocus
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Buscar instrumento..."
+                  className="flex-1 bg-transparent text-[13px] outline-none placeholder:text-white/30"
+                />
+              </div>
+            </div>
+            <div className="max-h-80 overflow-y-auto">
+              {results.length === 0 && (
+                <div className="px-3 py-4 text-center text-[12px] text-white/40">Sin resultados</div>
+              )}
+              {results.map((s) => {
+                const ic = symbolIcon(s.name);
+                const isOpen = openSymbols.includes(s.name);
+                return (
+                  <button
+                    key={s.name}
+                    onClick={() => {
+                      onAdd(s.name);
+                      setPickerOpen(false);
+                      setQuery("");
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 hover:bg-white/5 text-left"
+                  >
+                    <span
+                      className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-bold shrink-0"
+                      style={{ background: ic.bg, color: ic.fg }}
+                    >
+                      {ic.glyph}
+                    </span>
+                    <span className="text-[13px] font-medium flex-1 truncate">{s.display}</span>
+                    {isOpen && <span className="text-[10px] text-[#4c82e3]">Abierto</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Watchlist({
+  items,
+  ticks,
+  dbAccountId,
+  loading,
+  selected,
+  onSelect,
+  categoryFilter,
+  onCategoryChange,
+}: {
+  items: Array<{ name: string; display: string; category: string }>;
+  ticks: ReadonlyMap<string, { bid: number; ask: number; last: number }>;
+  dbAccountId: string | null;
+  loading: boolean;
+  selected: string;
+  onSelect: (sym: string) => void;
+  categoryFilter: string;
+  onCategoryChange: (c: string) => void;
+}) {
+  const categories = useMemo(() => {
+    const set = new Set(items.map((i) => i.category));
+    return ["TODO", ...Array.from(set)];
+  }, [items]);
+  const [search, setSearch] = useState("");
+  const filtered = items.filter(
+    (i) =>
+      (categoryFilter === "TODO" || i.category === categoryFilter) &&
+      (i.display.toLowerCase().includes(search.toLowerCase()) || i.name.toLowerCase().includes(search.toLowerCase())),
+  );
+
+  return (
+    <>
+      <div className="px-3 py-3 border-b border-white/10">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-xs font-semibold uppercase tracking-wider text-white/70">Watchlist</span>
+          <Plus className="h-3.5 w-3.5 text-white/50 hover:text-white cursor-pointer" />
+        </div>
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-white/40" />
+          <Input
+            placeholder="Buscar instrumentos..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-7 pl-7 text-xs bg-white/5 border-white/10 text-white placeholder:text-white/40"
+          />
+        </div>
+      </div>
+      <div className="flex gap-2 px-2 py-2 border-b border-white/10 text-[10px] overflow-x-auto">
+        {categories.map((c) => (
+          <button
+            key={c}
+            onClick={() => onCategoryChange(c)}
+            className={cn(
+              "px-2 py-1 rounded font-medium transition-colors whitespace-nowrap",
+              categoryFilter === c ? "text-white border-b border-[#4c82e3]" : "text-white/50 hover:text-white/80",
+            )}
+          >
+            {c}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-[22px_1fr_auto] items-center gap-2.5 px-4 py-1.5 text-[10px] uppercase tracking-wider text-white/40 border-b border-white/10">
+        <div></div>
+        <div>Par</div>
+        <div className="text-right">Precio</div>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {loading && (
+          <div className="flex items-center justify-center py-6 text-white/50">
+            <Loader2 className="h-4 w-4 animate-spin" />
+          </div>
+        )}
+        {!loading && filtered.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-6 px-3 text-center">
+            <p className="text-xs text-white/50">Sin símbolos disponibles</p>
+            {items.length === 0 && (
+              <p className="text-[10px] text-white/30 mt-1">Conecta una cuenta para ver los instrumentos</p>
+            )}
+          </div>
+        )}
+        {filtered.map((item) => {
+          const tick = dbAccountId ? ticks.get(`${dbAccountId}::${item.name}`) : null;
+          const isSel = selected === item.name;
+          const icon = symbolIcon(item.name);
+          return (
+            <div
+              key={item.name}
+              onClick={() => onSelect(item.name)}
+              className={cn(
+                "grid grid-cols-[22px_1fr_auto] items-center gap-2.5 px-4 py-2 text-xs cursor-pointer transition-colors",
+                isSel ? "bg-[#4c82e3]/[0.08] shadow-[inset_2px_0_0_#4c82e3]" : "hover:bg-[#121826]",
+              )}
+            >
+              <div
+                className="flex h-[22px] w-[22px] items-center justify-center rounded-full text-[9px] font-bold"
+                style={{ background: icon.bg, color: icon.fg }}
+              >
+                {icon.glyph}
+              </div>
+              <div className={cn("font-medium truncate", isSel ? "text-white" : "text-[#dde2ea]")}>{item.display}</div>
+              <div className="text-right text-[#cdd3dd] tabular-nums">
+                {tick ? tick.bid.toFixed(tick.bid < 10 ? 5 : 2) : "—"}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="px-3 py-2 border-t border-white/10">
+        <Button variant="ghost" className="w-full justify-start text-xs text-white/60 hover:text-white hover:bg-white/5">
+          <Plus className="h-3 w-3 mr-1.5" />
+          Agregar instrumento
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function CloseAllDialog({
+  open,
+  onOpenChange,
+  positions,
+  busy,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+  positions: CopyTradingPosition[];
+  busy: boolean;
+  onConfirm: (list: CopyTradingPosition[]) => void | Promise<void>;
+}) {
+  const sum = (list: CopyTradingPosition[]) => list.reduce((a, p) => a + (p.openPnlUsd ?? 0), 0);
+  const options = useMemo(() => {
+    const profit = positions.filter((p) => (p.openPnlUsd ?? 0) > 0);
+    const losing = positions.filter((p) => (p.openPnlUsd ?? 0) < 0);
+    const buys = positions.filter((p) => p.side === "LONG");
+    const sells = positions.filter((p) => p.side === "SHORT");
+    return [
+      { id: "all", label: "Cerrar todas", list: positions },
+      { id: "profit", label: "Cerrar todas las rentables", list: profit },
+      { id: "losing", label: "Cerrar todas las perdedoras", list: losing },
+      { id: "buy", label: "Cerrar todas las de compra", list: buys },
+      { id: "sell", label: "Cerrar todas las de venta", list: sells },
+    ];
+  }, [positions]);
+  const [choice, setChoice] = useState("all");
+  const selected = options.find((o) => o.id === choice) ?? options[0];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md border-white/10 bg-[#0b1019] text-white">
+        <DialogHeader>
+          <DialogTitle>¿Cerrar posiciones a precio de mercado?</DialogTitle>
+          <DialogDescription className="sr-only">
+            Elige qué grupo de posiciones cerrar y confirma la operación.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-1.5">
+          {options.map((o) => {
+            const total = sum(o.list);
+            const disabled = o.list.length === 0;
+            const active = choice === o.id;
+            return (
+              <button
+                key={o.id}
+                disabled={disabled}
+                onClick={() => setChoice(o.id)}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-left transition-colors",
+                  active ? "border-[#4c82e3] bg-[#4c82e3]/10" : "border-white/10 hover:bg-white/5",
+                  disabled && "opacity-40 cursor-not-allowed",
+                )}
+              >
+                <span className="flex items-center gap-2 text-[13px]">
+                  <span className={cn("flex h-3.5 w-3.5 items-center justify-center rounded-full border", active ? "border-[#4c82e3]" : "border-white/30")}>
+                    {active && <span className="h-1.5 w-1.5 rounded-full bg-[#4c82e3]" />}
+                  </span>
+                  {o.label}
+                  <span className="text-white/40">({o.list.length})</span>
+                </span>
+                <span className={cn("text-[13px] tabular-nums font-medium", total >= 0 ? "text-[#2ed68d]" : "text-[#ef5350]")}>
+                  {total >= 0 ? "+" : ""}${total.toFixed(2)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex gap-2 pt-2">
+          <Button variant="outline" className="flex-1 border-white/10 bg-transparent" onClick={() => onOpenChange(false)}>Cancelar</Button>
+          <Button
+            className="flex-1 bg-[#1aa86a] hover:bg-[#1fbd78] text-white"
+            disabled={busy || !selected || selected.list.length === 0}
+            onClick={() => void onConfirm(selected.list)}
+          >
+            {busy ? "Cerrando…" : "Confirmar"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BottomPanel({
+  positions,
+  loading,
+  activeTab,
+  totalPnl,
+  balance,
+  equity,
+  marginFree,
+  onClose,
+  onUpdateStops,
+}: {
+  positions: CopyTradingPosition[];
+  loading: boolean;
+  activeTab: BottomTab;
+  totalPnl: number;
+  balance: number | null;
+  equity: number | null;
+  marginFree: number | null;
+  onClose: (p: CopyTradingPosition) => void;
+  onUpdateStops: (p: CopyTradingPosition, sl: number | null, tp: number | null) => Promise<void>;
+}) {
+  const [edit, setEdit] = useState<CopyTradingPosition | null>(null);
+  const [editSl, setEditSl] = useState("");
+  const [editTp, setEditTp] = useState("");
+  const [saving, setSaving] = useState(false);
+  const px = (v: number | null | undefined) =>
+    v == null ? "—" : v.toFixed(v > 0 && v < 20 ? 5 : 2);
+
+  const openEdit = (p: CopyTradingPosition) => {
+    setEdit(p);
+    setEditSl(p.sl && p.sl > 0 ? String(p.sl) : "");
+    setEditTp(p.tp && p.tp > 0 ? String(p.tp) : "");
+  };
+  const saveEdit = async () => {
+    if (!edit) return;
+    setSaving(true);
+    try {
+      await onUpdateStops(edit, parseFloat(editSl) || null, parseFloat(editTp) || null);
+      setEdit(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const COLS = "grid-cols-[80px_104px_52px_64px_1fr_1fr_84px_84px_120px_1fr_30px]";
+  const fmtOpened = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleString("es", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+
+  return (
+    <>
+      {activeTab === "POSICIONES" && (
+        <div className="flex-1 overflow-y-auto">
+          {loading && (
+            <div className="flex items-center justify-center py-6 text-white/50">
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </div>
+          )}
+          {!loading && positions.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-6 text-white/50 text-xs">
+              <p>Sin posiciones abiertas</p>
+              <p className="text-[10px] text-white/30 mt-1">Las posiciones abiertas aparecerán aquí</p>
+            </div>
+          )}
+          {!loading && positions.length > 0 && (
+            <>
+              <div className={cn("hidden sm:grid gap-2 px-3 py-1.5 text-[10px] uppercase tracking-wider text-white/40 border-b border-white/5", COLS)}>
+                <div>Ticket</div>
+                <div>Símbolo</div>
+                <div>Tipo</div>
+                <div className="text-right">Volumen</div>
+                <div className="text-right">Entrada</div>
+                <div className="text-right">Actual</div>
+                <div className="text-right">TP</div>
+                <div className="text-right">SL</div>
+                <div className="text-right">Hora apertura</div>
+                <div className="text-right">P&L</div>
+                <div></div>
+              </div>
+              {positions.map((p) => (
+                <div key={p.id} className="px-3 py-2 text-xs hover:bg-white/5 border-b border-white/5">
+                  {/* Mobile */}
+                  <div className="grid grid-cols-2 sm:hidden gap-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-white">{formatSymbolDisplay(p.symbol)}</span>
+                      <Badge className={cn("px-1.5 py-0 text-[10px] font-bold border-0", p.side === "LONG" ? "bg-[#2ed68d]/15 text-[#2ed68d]" : "bg-[#ef5350]/15 text-[#ef5350]")}>
+                        {p.side === "LONG" ? "BUY" : "SELL"}
+                      </Badge>
+                    </div>
+                    <div className="text-right">
+                      <span className={cn("font-bold", p.openPnlUsd >= 0 ? "text-[#2ed68d]" : "text-[#ef5350]")}>
+                        {p.openPnlUsd >= 0 ? "+" : ""}${p.openPnlUsd.toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="text-white/60 text-[10px]">#{p.id} · {p.qty} @ {px(p.avgPrice)}</div>
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => openEdit(p)} className="h-6 text-[10px] text-[#4c82e3] hover:underline px-1">SL/TP</button>
+                      <button onClick={() => onClose(p)} className="h-6 text-[10px] text-[#ef5350] hover:underline px-1">CERRAR</button>
+                    </div>
+                  </div>
+                  {/* Desktop */}
+                  <div className={cn("hidden sm:grid gap-2 items-center", COLS)}>
+                    <div className="text-white/80">#{p.id}</div>
+                    <div className="font-semibold text-white truncate">{formatSymbolDisplay(p.symbol)}</div>
+                    <div>
+                      <Badge className={cn("px-2 py-0.5 text-[10px] font-bold border-0", p.side === "LONG" ? "bg-[#2ed68d]/15 text-[#2ed68d]" : "bg-[#ef5350]/15 text-[#ef5350]")}>
+                        {p.side === "LONG" ? "BUY" : "SELL"}
+                      </Badge>
+                    </div>
+                    <div className="text-right text-white/80 tabular-nums">{p.qty.toFixed(2)}</div>
+                    <div className="text-right text-white/80 tabular-nums">{px(p.avgPrice)}</div>
+                    <div className={cn("text-right font-semibold tabular-nums", p.currentPrice >= p.avgPrice ? "text-[#2ed68d]" : "text-[#ef5350]")}>
+                      {px(p.currentPrice)}
+                    </div>
+                    <button onClick={() => openEdit(p)} title="Modificar TP" className="text-right text-[#2ed68d] tabular-nums hover:underline">{p.tp ? px(p.tp) : "+ TP"}</button>
+                    <button onClick={() => openEdit(p)} title="Modificar SL" className="text-right text-[#ef5350] tabular-nums hover:underline">{p.sl ? px(p.sl) : "+ SL"}</button>
+                    <div className="text-right text-white/55 tabular-nums text-[11px]">{fmtOpened(p.openedAtIso)}</div>
+                    <div className={cn("text-right font-bold tabular-nums", p.openPnlUsd >= 0 ? "text-[#2ed68d]" : "text-[#ef5350]")}>
+                      {p.openPnlUsd >= 0 ? "+" : ""}${p.openPnlUsd.toFixed(2)}
+                    </div>
+                    <button
+                      onClick={() => onClose(p)}
+                      title="Cerrar posición"
+                      className="flex h-6 w-6 items-center justify-center rounded text-white/40 hover:bg-[#ef5350]/15 hover:text-[#ef5350] justify-self-end"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 px-3 py-2.5 border-t border-white/10 text-[11px]">
+                <div className="flex items-center gap-2 text-white/50">
+                  <span className="uppercase tracking-wider text-[10px]">Saldo</span>
+                  <span className="font-semibold text-white tabular-nums">
+                    {balance == null ? "—" : balance.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-white/50">
+                  <span className="uppercase tracking-wider text-[10px]">Capital</span>
+                  <span className="font-semibold text-white tabular-nums">
+                    {equity == null ? "—" : equity.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-white/50">
+                  <span className="uppercase tracking-wider text-[10px]">Margen Libre</span>
+                  <span className="font-semibold text-white tabular-nums">
+                    {marginFree == null ? "—" : marginFree.toLocaleString("en-US", { style: "currency", currency: "USD" })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 ml-auto">
+                  <span className="text-white/50 uppercase tracking-wider text-[10px]">P&L Total</span>
+                  <span className={cn("font-semibold tabular-nums text-[13px]", totalPnl >= 0 ? "text-[#2ed68d]" : "text-[#ef5350]")}>
+                    {totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      <Dialog open={Boolean(edit)} onOpenChange={(o) => !o && setEdit(null)}>
+        <DialogContent className="max-w-sm border-white/10 bg-[#0b1019] text-white">
+          <DialogHeader>
+            <DialogTitle>Modificar SL / TP · #{edit?.id}</DialogTitle>
+            <DialogDescription className="sr-only">
+              Edita el Stop Loss y el Take Profit de la posición.
+            </DialogDescription>
+          </DialogHeader>
+          {edit && (
+            <div className="space-y-3">
+              <div className="text-[11px] text-white/50">
+                {formatSymbolDisplay(edit.symbol)} · {edit.side === "LONG" ? "BUY" : "SELL"} · entrada {px(edit.avgPrice)}
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[#2ed68d] mb-1">Take Profit</div>
+                <Input value={editTp} onChange={(e) => setEditTp(e.target.value)} placeholder="0 = sin TP" className="h-9 bg-[#121826] border-white/10 text-white tabular-nums" />
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-[#ef5350] mb-1">Stop Loss</div>
+                <Input value={editSl} onChange={(e) => setEditSl(e.target.value)} placeholder="0 = sin SL" className="h-9 bg-[#121826] border-white/10 text-white tabular-nums" />
+              </div>
+              <div className="flex gap-2 pt-1">
+                <Button variant="outline" className="flex-1 border-white/10 bg-transparent" onClick={() => setEdit(null)}>Cancelar</Button>
+                <Button className="flex-1 bg-[#4c82e3] hover:bg-[#3a64b8] text-white" disabled={saving} onClick={() => void saveEdit()}>
+                  {saving ? "Guardando…" : "Confirmar"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {activeTab === "ORDENES" && (
+        <div className="flex-1 flex items-center justify-center text-white/40 text-xs">Sin órdenes pendientes</div>
+      )}
+      {activeTab === "HISTORIAL" && (
+        <div className="flex-1 flex items-center justify-center text-white/40 text-xs">Sin historial</div>
+      )}
+    </>
+  );
+}
+
+function TradePanel({
+  bidPrice,
+  askPrice,
+  spread,
+  symbol,
+  orderType,
+  setOrderType,
+  volume,
+  setVolume,
+  takeProfitEnabled,
+  setTakeProfitEnabled,
+  takeProfitPrice,
+  setTakeProfitPrice,
+  stopLossEnabled,
+  setStopLossEnabled,
+  stopLossPrice,
+  setStopLossPrice,
+  notional,
+  risk,
+  reward,
+  onSubmit,
+  submitting,
+  lastPrice,
+  orderMode,
+  setOrderMode,
+  capital,
+  autoTpSl,
+}: {
+  bidPrice: number;
+  askPrice: number;
+  spread: number;
+  symbol: string;
+  orderType: OrderType;
+  setOrderType: (t: OrderType) => void;
+  volume: string;
+  setVolume: (v: string) => void;
+  takeProfitEnabled: boolean;
+  setTakeProfitEnabled: (b: boolean) => void;
+  takeProfitPrice: string;
+  setTakeProfitPrice: (v: string) => void;
+  stopLossEnabled: boolean;
+  setStopLossEnabled: (b: boolean) => void;
+  stopLossPrice: string;
+  setStopLossPrice: (v: string) => void;
+  notional: number;
+  risk: number;
+  reward: number;
+  onSubmit: (side: "buy" | "sell") => void;
+  submitting: boolean;
+  lastPrice: number;
+  orderMode: OrderMode;
+  setOrderMode: (m: OrderMode) => void;
+  capital: number | null;
+  autoTpSl: boolean;
+}) {
+  const ratio = reward > 0 && risk > 0 ? `1 : ${(reward / risk).toFixed(2)}` : "—";
+  const hasData = bidPrice > 0;
+  const isOneClick = orderMode === "oneClick";
+  const isRisk = orderMode === "risk";
+  // Risk-calc mode: user picks a % of capital to risk + an SL price; we derive
+  // the lot size from the same model the risk readout uses (risk = |price−SL| ×
+  // lots), so the displayed Riesgo stays consistent. Setting the volume feeds
+  // the rest of the normal submit flow.
+  const [riskPct, setRiskPct] = useState<string>("1");
+  const slDist = isRisk && parseFloat(stopLossPrice) > 0 ? Math.abs(lastPrice - parseFloat(stopLossPrice)) : 0;
+  const riskUsd = capital != null && parseFloat(riskPct) > 0 ? capital * (parseFloat(riskPct) / 100) : 0;
+  const computedLots = slDist > 0 && riskUsd > 0 ? Math.max(0.01, Number((riskUsd / slDist).toFixed(2))) : 0;
+  useEffect(() => {
+    if (isRisk && computedLots > 0) setVolume(computedLots.toFixed(2));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRisk, computedLots]);
+  // Sub-unit instruments (FX/metals) need 5 decimals; large ones (BTC/indices) 2.
+  const priceDec = bidPrice > 0 && bidPrice < 20 ? 5 : 2;
+  // One "pip" step per instrument class so the +/- presets are sensible:
+  // FX majors 0.0001, JPY/metals 0.01, large (BTC/indices) 1 point.
+  const pipSize = bidPrice >= 1000 ? 1 : bidPrice >= 20 ? 0.01 : 0.0001;
+  const pipPresets = [10, 20, 50, 100];
+
+  // "Fijar TP/SL automáticamente" (Configuración): opt-in pre-fill of TP/SL with
+  // ±50 pips when a market opens/changes. The user can still edit or disable.
+  useEffect(() => {
+    if (!autoTpSl || !hasData || !symbol) return;
+    setTakeProfitEnabled(true);
+    setStopLossEnabled(true);
+    setTakeProfitPrice((lastPrice + 50 * pipSize).toFixed(priceDec));
+    setStopLossPrice((lastPrice - 50 * pipSize).toFixed(priceDec));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoTpSl, symbol, hasData]);
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+        <span className="text-sm font-semibold truncate">{symbol ? formatSymbolDisplay(symbol) : "Selecciona un símbolo"}</span>
+        <select
+          value={orderMode}
+          onChange={(e) => setOrderMode(e.target.value as OrderMode)}
+          className="shrink-0 rounded-md border border-white/10 bg-[#121826] px-2 py-1 text-[11px] text-white/80 outline-none hover:border-white/20 cursor-pointer"
+          title="Modo de apertura de órdenes"
+        >
+          <option value="regular">Formulario regular</option>
+          <option value="oneClick">Formulario con un clic</option>
+          <option value="risk">Cálculo de riesgo</option>
+        </select>
+      </div>
+      <div className="grid grid-cols-[1fr_60px_1fr] gap-2 px-3 pb-3 pt-1 shrink-0">
+        <div className="flex flex-col items-center gap-1 rounded-lg border border-[#ef5350]/25 bg-[#ef5350]/10 px-2 py-2.5">
+          <span className="text-[10px] font-semibold tracking-wide text-[#ef6863]">VENDER</span>
+          <span className="text-base font-semibold text-[#ff8580] tabular-nums">{hasData ? bidPrice.toFixed(priceDec) : "—"}</span>
+        </div>
+        <div className="flex flex-col items-center justify-center gap-1 rounded-lg bg-[#121826] px-1 py-2.5">
+          <span className="text-[9px] tracking-wide text-white/45">SPREAD</span>
+          <span className="text-sm text-[#cdd3dd] tabular-nums">{hasData ? (spread * Math.pow(10, priceDec - 1)).toFixed(1) : "—"}</span>
+        </div>
+        <div className="flex flex-col items-center gap-1 rounded-lg border border-[#2ed68d]/25 bg-[#2ed68d]/10 px-2 py-2.5">
+          <span className="text-[10px] font-semibold tracking-wide text-[#42d99a]">COMPRAR</span>
+          <span className="text-base font-semibold text-[#5ce3ab] tabular-nums">{hasData ? askPrice.toFixed(priceDec) : "—"}</span>
+        </div>
+      </div>
+      <div className="flex border-b border-white/10 shrink-0">
+        {(["MERCADO", "LIMITE", "STOP"] as const).map((t) => {
+          // Backend only executes market orders today; the other tabs are shown
+          // disabled so the capability is clear instead of failing on submit.
+          const disabled = t !== "MERCADO";
+          return (
+            <button
+              key={t}
+              disabled={disabled}
+              title={disabled ? "Próximamente" : undefined}
+              onClick={() => !disabled && setOrderType(t)}
+              className={cn(
+                "flex-1 py-2 text-xs font-semibold uppercase tracking-wider transition-colors",
+                disabled && "opacity-30 cursor-not-allowed",
+                orderType === t ? "text-white border-b-2 border-[#4c82e3]" : "text-white/50 hover:text-white/80",
+              )}
+            >
+              {t}
+            </button>
+          );
+        })}
+      </div>
+      <div className="px-3 py-3 space-y-3 overflow-y-auto flex-1">
+        {isRisk && (
+          <div className="rounded-lg border border-[#4c82e3]/25 bg-[#4c82e3]/5 p-2.5 space-y-2.5">
+            <div className="text-[10px] text-[#7aa6ee] uppercase tracking-wider font-semibold">Cálculo de riesgo</div>
+            <div>
+              <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">Riesgo (% del capital)</div>
+              <div className="flex items-center gap-2">
+                <Input value={riskPct} onChange={(e) => setRiskPct(e.target.value)} className="h-9 text-center bg-white/5 border-white/10 text-white tabular-nums" />
+                <div className="grid grid-cols-3 gap-1">
+                  {["0.5", "1", "2"].map((p) => (
+                    <Button key={p} variant="outline" size="sm" className="h-9 px-2 text-[10px] bg-white/5 border-white/10 text-white/70 hover:bg-white/10" onClick={() => setRiskPct(p)}>
+                      {p}%
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">Stop Loss (precio)</div>
+              <Input value={stopLossPrice} onChange={(e) => setStopLossPrice(e.target.value)} disabled={!hasData} placeholder={hasData ? "Define el SL para calcular" : "Sin precio"} className="h-9 bg-white/5 border-white/10 text-white tabular-nums" />
+            </div>
+            <div className="flex items-center justify-between text-[11px] pt-0.5">
+              <span className="text-white/50">Riesgo ≈ <span className="text-[#ef5350] font-semibold tabular-nums">{riskUsd > 0 ? `$${riskUsd.toFixed(2)}` : "—"}</span></span>
+              <span className="text-white/50">Lotes ≈ <span className="text-white font-semibold tabular-nums">{computedLots > 0 ? computedLots.toFixed(2) : "—"}</span></span>
+            </div>
+          </div>
+        )}
+        <div>
+          <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1.5">Volumen (Lotes){isRisk && " · calculado"}</div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" disabled={isRisk} className="h-9 w-9 bg-white/5 border-white/10 text-white hover:bg-white/10 disabled:opacity-30" onClick={() => setVolume(Math.max(0.01, parseFloat(volume) - 0.01).toFixed(2))}>−</Button>
+            <Input value={volume} readOnly={isRisk} onChange={(e) => setVolume(e.target.value)} className="h-9 text-center bg-white/5 border-white/10 text-white" />
+            <Button variant="outline" size="sm" disabled={isRisk} className="h-9 w-9 bg-white/5 border-white/10 text-white hover:bg-white/10 disabled:opacity-30" onClick={() => setVolume((parseFloat(volume) + 0.01).toFixed(2))}>+</Button>
+          </div>
+          <div className="text-[11px] text-white/50 mt-1 tabular-nums">
+            {hasData ? `≈ $${notional.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Sin precio disponible"}
+          </div>
+        </div>
+        {!isOneClick && (
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] text-white/50 uppercase tracking-wider">Take Profit</span>
+            <Switch
+              checked={takeProfitEnabled}
+              onCheckedChange={(v) => {
+                setTakeProfitEnabled(v);
+                // Default TP to +50 pips so the user can leave it as-is.
+                if (v && hasData && !(parseFloat(takeProfitPrice) > 0)) {
+                  setTakeProfitPrice((lastPrice + 50 * pipSize).toFixed(priceDec));
+                }
+              }}
+            />
+          </div>
+          <Input value={takeProfitPrice} onChange={(e) => setTakeProfitPrice(e.target.value)} disabled={!takeProfitEnabled || !hasData} className="h-9 bg-white/5 border-white/10 text-white tabular-nums" placeholder={hasData ? "" : "Sin precio"} />
+          {takeProfitEnabled && parseFloat(takeProfitPrice) > 0 && hasData && (
+            <div className="text-[11px] text-emerald-400 mt-1 text-right tabular-nums">
+              +${(parseFloat(takeProfitPrice) - lastPrice).toFixed(2)}
+            </div>
+          )}
+          {hasData && takeProfitEnabled && (
+            <div className="grid grid-cols-4 gap-1 mt-1.5">
+              {pipPresets.map((d) => (
+                <Button key={d} variant="outline" size="sm" className="h-7 text-[10px] bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                  onClick={() => setTakeProfitPrice((lastPrice + d * pipSize).toFixed(priceDec))}
+                >
+                  +{d}p
+                </Button>
+              ))}
+            </div>
+          )}
+        </div>
+        )}
+        {!isOneClick && !isRisk && (
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] text-white/50 uppercase tracking-wider">Stop Loss</span>
+            <Switch
+              checked={stopLossEnabled}
+              onCheckedChange={(v) => {
+                setStopLossEnabled(v);
+                // Default SL to −50 pips so the user can leave it as-is.
+                if (v && hasData && !(parseFloat(stopLossPrice) > 0)) {
+                  setStopLossPrice((lastPrice - 50 * pipSize).toFixed(priceDec));
+                }
+              }}
+            />
+          </div>
+          <Input value={stopLossPrice} onChange={(e) => setStopLossPrice(e.target.value)} disabled={!stopLossEnabled || !hasData} className="h-9 bg-white/5 border-white/10 text-white tabular-nums" placeholder={hasData ? "" : "Sin precio"} />
+          {stopLossEnabled && parseFloat(stopLossPrice) > 0 && hasData && (
+            <div className="text-[11px] text-red-400 mt-1 text-right tabular-nums">
+              −${Math.abs(lastPrice - parseFloat(stopLossPrice)).toFixed(2)}
+            </div>
+          )}
+          {hasData && stopLossEnabled && (
+            <div className="grid grid-cols-4 gap-1 mt-1.5">
+              {pipPresets.map((d) => (
+                <Button key={d} variant="outline" size="sm" className="h-7 text-[10px] bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+                  onClick={() => setStopLossPrice((lastPrice - d * pipSize).toFixed(priceDec))}
+                >
+                  −{d}p
+                </Button>
+              ))}
+            </div>
+          )}
+        </div>
+        )}
+        {!isOneClick && (
+        <div className="grid grid-cols-3 gap-2 text-[10px]">
+          <div>
+            <div className="text-white/50 uppercase tracking-wider">Ratio</div>
+            <div className="text-sm font-bold text-white mt-0.5">{ratio}</div>
+          </div>
+          <div>
+            <div className="text-white/50 uppercase tracking-wider">Riesgo</div>
+            <div className="text-sm font-bold text-red-400 mt-0.5 tabular-nums">−${risk.toFixed(2)}</div>
+          </div>
+          <div>
+            <div className="text-white/50 uppercase tracking-wider">Premio</div>
+            <div className="text-sm font-bold text-emerald-400 mt-0.5 tabular-nums">+${reward.toFixed(2)}</div>
+          </div>
+        </div>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-2 p-3 border-t border-white/10 shrink-0">
+        <Button
+          disabled={!hasData || submitting || (isRisk && computedLots <= 0)}
+          onClick={() => onSubmit("sell")}
+          className="h-12 bg-[#e0413d] hover:bg-[#ef5350] text-white font-bold text-sm tracking-wide disabled:opacity-40"
+        >
+          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "VENDER"}
+        </Button>
+        <Button
+          disabled={!hasData || submitting || (isRisk && computedLots <= 0)}
+          onClick={() => onSubmit("buy")}
+          className="h-12 bg-[#1aa86a] hover:bg-[#1fbd78] text-white font-bold text-sm tracking-wide disabled:opacity-40"
+        >
+          {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "COMPRAR"}
+        </Button>
+      </div>
+      <div className={cn("text-[10px] text-center py-1.5 border-t border-white/10 shrink-0", isOneClick ? "text-[#e3b341]" : "text-white/40")}>
+        {isOneClick
+          ? "Un clic · ejecución SIN confirmación"
+          : isRisk
+            ? "Lotes calculados por riesgo · se pedirá confirmación"
+            : "Orden de mercado · Ejecución inmediata"}
+      </div>
+    </div>
+  );
+}

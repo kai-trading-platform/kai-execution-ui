@@ -3,6 +3,11 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 export default defineConfig(() => {
     const proxyConfig = {};
+    proxyConfig["/api/trading"] = {
+        target: process.env.VITE_EXECUTION_API_URL || "http://localhost:3001",
+        changeOrigin: true,
+        secure: false,
+    };
     proxyConfig["/api"] = {
         target: process.env.VITE_BACKEND_PROXY_TARGET || "http://localhost:3000",
         changeOrigin: true,

@@ -7,7 +7,7 @@ export function usePlaceTradingOrder() {
   return useMutation({
     mutationFn: (payload: PlaceTradingOrderPayload) => placeTradingOrder(payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["trading-positions"] });
+      queryClient.invalidateQueries({ queryKey: ["trading", "accounts"] });
     },
   });
 }

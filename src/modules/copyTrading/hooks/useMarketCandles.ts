@@ -13,15 +13,18 @@ export interface MarketCandle {
 const TIMEFRAME_MAP: Record<string, string> = {
   "1m": "M1",
   "5m": "M5",
+  "10m": "M10",
   "15m": "M15",
   "30m": "M30",
   "1h": "H1",
+  "2h": "H2",
   "4h": "H4",
   D: "D1",
   W: "W1",
+  M: "MN1",
 };
 
-async function fetchCandles(
+export async function fetchCandles(
   accountId: string,
   symbol: string,
   timeframe: string,
@@ -29,7 +32,7 @@ async function fetchCandles(
 ): Promise<MarketCandle[]> {
   const tf = TIMEFRAME_MAP[timeframe] ?? timeframe;
 
-  const candles = await nestAuthFetch<Array<{
+  type RawCandle = {
     timestamp?: number;
     time?: number;
     open: number | string;
@@ -37,7 +40,23 @@ async function fetchCandles(
     low: number | string;
     close: number | string;
     volume?: number | string;
-  }>>(`/api/mt5-accounts/${accountId}/rates/${encodeURIComponent(symbol)}?timeframe=${tf}&count=${limit}`);
+  };
+
+  // MT5 returns an EMPTY array when asked for MORE candles than it has on a
+  // timeframe (e.g. 20000 on D1 = 54 years), instead of clamping. So try the
+  // requested count first and fall back to progressively smaller ones until we
+  // get data — this maximizes history per timeframe (1m gets weeks, D1 gets all
+  // available years).
+  const candidates = Array.from(
+    new Set([limit, 10000, 5000, 3000, 2000, 1000, 500].filter((n) => n > 0 && n <= limit)),
+  );
+  let candles: RawCandle[] = [];
+  for (const count of candidates) {
+    candles = await nestAuthFetch<RawCandle[]>(
+      `/api/mt5-accounts/${accountId}/rates/${encodeURIComponent(symbol)}?timeframe=${tf}&count=${count}`,
+    );
+    if (candles && candles.length > 0) break;
+  }
 
   if (!candles || candles.length === 0) {
     return [];

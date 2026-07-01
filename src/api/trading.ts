@@ -29,7 +29,8 @@ export function placeTradingOrder(
 ): Promise<PlaceTradingOrderResult> {
   return nestAuthFetch<PlaceTradingOrderResult>("/api/trading/orders", {
     method: "POST",
-    json: payload,
+    json: { ...payload, dryRun: false },
+    headers: { "Idempotency-Key": crypto.randomUUID() },
   });
 }
 

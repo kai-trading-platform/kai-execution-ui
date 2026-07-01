@@ -144,10 +144,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
   const [isLoading, setIsLoading] = useState(true);
 
-  // Initial read from localStorage
+  // Initial read from localStorage + cross-origin bootstrap
   useEffect(() => {
-    setIsLoading(false);
-
     const syncState = () => {
       setState(readStoredAuth());
       setIsLoading(false);
@@ -160,6 +158,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     window.addEventListener("storage", handleStorage);
     window.addEventListener(AUTH_STORAGE_EVENT, syncState);
+
+    // ── Cross-origin bootstrap ────────────────────────────────────────────
+    // kai-execution-ui (port 5174) is a separate origin from kai-frontend
+    // (port 80), so they don't share localStorage. When the user opens the
+    // terminal from the "Operar" button, the refresh cookie is sent (same
+    // domain, sameSite=Lax). If we have no access token in localStorage,
+    // try a silent refresh to bootstrap a session. We keep isLoading=true
+    // until this attempt settles so the guard doesn't flash the login screen
+    // before a valid cookie-based session has had a chance to resolve.
+    if (readStoredAuth()) {
+      setIsLoading(false);
+    } else {
+      void (async () => {
+        try {
+          const res = await fetch(getApiUrl("/api/auth/refresh"), {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({}),
+          });
+          if (res.ok) {
+            const payload = await res.json();
+            const next = normalizePayload(payload);
+            writeStoredAuth(next);
+            setState(next);
+          }
+        } catch {
+          // best-effort; user can still log in manually via the login screen
+        } finally {
+          setIsLoading(false);
+        }
+      })();
+    }
 
     return () => {
       window.removeEventListener("storage", handleStorage);

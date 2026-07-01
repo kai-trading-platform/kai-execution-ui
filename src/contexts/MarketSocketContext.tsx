@@ -86,8 +86,16 @@ export function MarketSocketProvider({ children }: { children: React.ReactNode }
     const connectionUrl = backendBase || window.location.origin;
 
     const newSocket = io(`${connectionUrl}/market`, {
-      query: { token: accessToken },
-      transports: ['websocket', 'polling'],
+      // Token via handshake auth (not query string) so it is not exposed in
+      // proxy/server access logs or browser history.
+      auth: { token: accessToken },
+      // Polling-only: the WebSocket upgrade is unreliable through the Vite dev
+      // proxy (Firefox fails the upgrade and the socket flaps with "connection
+      // interrupted" / disconnect). HTTP long-polling delivers ticks in near
+      // real time and stays stable across browsers/proxies. In production
+      // (behind Caddy) WS works, but polling is a safe universal default here.
+      transports: ['polling'],
+      upgrade: false,
       autoConnect: true,
       reconnection: true,
     });

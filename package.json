@@ -53,6 +53,7 @@
     "date-fns": "3.6.0",
     "embla-carousel-react": "8.6.0",
     "html2canvas": "1.4.1",
+    "klinecharts": "9.8.12",
     "lightweight-charts": "5.1.0",
     "lucide-react": "0.462.0",
     "next-themes": "0.3.0",
@@ -94,6 +95,10 @@
   "pnpm": {
     "overrides": {
       "lodash": "4.17.21"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "@swc/core",
+      "esbuild"
+    ]
   }
 }

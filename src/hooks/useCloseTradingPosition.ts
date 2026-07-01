@@ -7,7 +7,7 @@ export function useCloseTradingPosition() {
   return useMutation({
     mutationFn: (payload: CloseTradingPositionPayload) => closeTradingPosition(payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["trading-positions"] });
+      queryClient.invalidateQueries({ queryKey: ["trading", "accounts"] });
     },
   });
 }

@@ -7,7 +7,7 @@ export function useUpdateTradingPositionStops() {
   return useMutation({
     mutationFn: (payload: UpdateTradingPositionStopsPayload) => updateTradingPositionStops(payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["trading-positions"] });
+      queryClient.invalidateQueries({ queryKey: ["trading", "accounts"] });
     },
   });
 }

@@ -158,8 +158,15 @@ async function refreshSession() {
     }
 
     const payload = await res.json();
+    const nextAccessToken = String(payload?.accessToken || "");
+    if (!nextAccessToken) {
+      // A 200 with no access token is a failed refresh — don't persist empty
+      // tokens (which would leave the app in a half-authenticated state).
+      writeStoredAuth(null);
+      return null;
+    }
     const next = {
-      accessToken: String(payload?.accessToken || ""),
+      accessToken: nextAccessToken,
       refreshToken: String(payload?.refreshToken || ""),
       user: {
         id: String(payload?.user?.id || ""),
