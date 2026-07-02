@@ -13,27 +13,29 @@ console.log = (...args: unknown[]) => {
   originalLog(...args);
 };
 
-// SSO handoff desde app.scyra.dev: como el terminal vive en otro subdominio,
-// no comparte el localStorage de la app. La app pasa la sesión en el fragmento
-// (#sso=...) — que NO viaja al servidor — y aquí la guardamos ANTES de montar
-// React, para que el usuario no tenga que volver a loguearse. Luego borramos el
-// fragmento para no dejar el token en la URL/historial.
+// SSO handoff desde app.scyra.dev: el terminal vive en otro subdominio y no
+// comparte el localStorage de la app. La app deja la sesión en una cookie de
+// dominio `.scyra.dev` (compartida entre subdominios) originada en su sesión YA
+// autenticada; aquí la consumimos ANTES de montar React y la borramos.
+//
+// Seguridad: NO se usa el fragmento de la URL (#sso=) — eso permitía *session
+// fixation* (un atacante mandaba un link con su token). Una cookie de
+// `.scyra.dev` no la puede setear un tercero en el navegador de la víctima, así
+// que el handoff solo funciona con la sesión real del propio usuario.
 (function consumeSsoHandoff() {
   try {
-    const match = window.location.hash.match(/[#&]sso=([^&]+)/);
-    if (!match) return;
-    const decoded = decodeURIComponent(escape(atob(decodeURIComponent(match[1]))));
+    const m = document.cookie.match(/(?:^|;\s*)kai_sso=([^;]+)/);
+    if (!m) return;
+    // Borrar la cookie de inmediato (un solo uso), pase lo que pase al parsear.
+    document.cookie =
+      "kai_sso=; domain=.scyra.dev; path=/; max-age=0; SameSite=Lax; Secure";
+    const decoded = decodeURIComponent(escape(atob(decodeURIComponent(m[1]))));
     const state = JSON.parse(decoded);
     if (state && state.accessToken) {
       localStorage.setItem("kai:nest-auth", JSON.stringify(state));
     }
-    history.replaceState(
-      null,
-      "",
-      window.location.pathname + window.location.search,
-    );
   } catch {
-    /* fragmento inválido: se ignora y el terminal pedirá login normal */
+    /* cookie inválida: se ignora y el terminal pedirá login normal */
   }
 })();
 
