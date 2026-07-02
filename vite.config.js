@@ -23,6 +23,7 @@ export default defineConfig(() => {
         server: {
             host: "::",
             port: 5174,
+            allowedHosts: [".scyra.dev", "localhost", "127.0.0.1"],
             proxy: proxyConfig,
         },
         build: {
