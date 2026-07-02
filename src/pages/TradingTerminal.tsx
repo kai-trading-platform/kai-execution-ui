@@ -41,7 +41,7 @@ type OrderMode = "regular" | "oneClick" | "risk";
 type Panel = "watchlist" | "trade" | "bottom";
 
 export default function TradingTerminalPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const accountId = searchParams.get("account");
   const { data: accounts = [], isLoading: accountsLoading } = useTradingAccounts();
 
@@ -53,6 +53,28 @@ export default function TradingTerminalPage() {
     const firstConnected = accounts.find((a: { status?: string }) => a.status === "connected");
     return firstConnected ?? accounts[0] ?? null;
   }, [accountId, accounts]);
+
+  // When ?account= is missing/empty (or doesn't match any account) we default
+  // to the first connected account. Reflect that choice back into the URL so
+  // the param is never silently empty: per-account state keyed by the URL param
+  // (open tabs, etc.) works, refresh/share keeps the same account, and the
+  // header selector shows a real account instead of "—".
+  const resolvedProviderId = (resolvedAccount as { providerAccountId?: string | null } | null)?.providerAccountId ?? null;
+  useEffect(() => {
+    if (!resolvedProviderId || accountId === resolvedProviderId) return;
+    const matchesParam = Boolean(
+      accountId && accounts.some((a: { providerAccountId?: string | null }) => a.providerAccountId === accountId),
+    );
+    if (matchesParam) return;
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("account", resolvedProviderId);
+        return next;
+      },
+      { replace: true },
+    );
+  }, [accountId, resolvedProviderId, accounts, setSearchParams]);
 
   const dbAccountId = (resolvedAccount as { id?: string } | null)?.id ?? null;
   const { data: positions = [], isLoading: positionsLoading } = useTradingPositions(dbAccountId);

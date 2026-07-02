@@ -332,13 +332,21 @@ export function KaiChart({
   // ── Lazy-load older history when the user scrolls left (infinite history,
   //    like TradingView). We re-request a larger window from MT5 and prepend the
   //    candles older than what's already on screen. No fixed limit. ───────────
+  //
+  // klinecharts 9.x semantics (counter-intuitive): `LoadDataType.Forward` fires
+  // when the view reaches the OLDEST candle (left edge) and PREPENDS the data we
+  // return; `Backward` fires at the NEWEST candle (right edge) and APPENDS.
+  // Since the chart tracks real time, Backward fires on every visible-range
+  // change — answering it with history used to append thousands of old candles
+  // to the right of the series in an infinite fetch loop (constant flicker).
+  // New candles arrive via updateData/ticks, so Backward must answer "no more".
   const loadMoreRef = useRef({ count: INITIAL_CANDLE_COUNT, busy: false });
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
     loadMoreRef.current = { count: INITIAL_CANDLE_COUNT, busy: false };
     chart.setLoadDataCallback((params) => {
-      if (params.type !== LoadDataType.Backward || !accountId || !symbol) {
+      if (params.type !== LoadDataType.Forward || !accountId || !symbol) {
         params.callback([], false);
         return;
       }

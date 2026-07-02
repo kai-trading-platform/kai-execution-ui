@@ -128,24 +128,28 @@ async function withAuthRetry<T>(runner: (accessToken: string) => Promise<T>): Pr
 }
 
 async function refreshSession() {
-  const current = readStoredAuth();
-  if (!current?.refreshToken) return null;
-
   if (refreshInFlight) {
     return refreshInFlight;
   }
 
   refreshInFlight = (async () => {
     const activeState = readStoredAuth();
-    if (!activeState?.refreshToken) {
+    if (!activeState) {
       return null;
     }
 
+    // If there's no stored refresh token (cookie-based session), still attempt
+    // the refresh — the backend can rotate from the httpOnly cookie. Previously
+    // we bailed out here WITHOUT clearing the stored session, leaving the app
+    // in a zombie half-authenticated state (expired access token + endless
+    // 401s + a terminal stuck on "Cargando...").
     const res = await fetch(getApiUrl("/api/auth/refresh"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken: activeState.refreshToken }),
+      body: JSON.stringify(
+        activeState.refreshToken ? { refreshToken: activeState.refreshToken } : {},
+      ),
     });
 
     if (!res.ok) {
