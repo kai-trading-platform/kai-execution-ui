@@ -35,6 +35,11 @@ type TradingOrderSide = "buy" | "sell";
 // Max symbols to stream live in the watchlist at once (see effect below for why).
 const WATCHLIST_LIVE_CAP = 20;
 
+// Stable empty fallback so query destructures don't mint a NEW [] on every
+// render while data is loading (unstable identities cascade into effects and
+// memos downstream — see the "Maximum update depth exceeded" fix in KaiChart).
+const EMPTY_LIST: never[] = [];
+
 type BottomTab = "POSICIONES" | "ORDENES" | "HISTORIAL";
 type OrderType = "MERCADO" | "LIMITE" | "STOP";
 type OrderMode = "regular" | "oneClick" | "risk";
@@ -43,7 +48,7 @@ type Panel = "watchlist" | "trade" | "bottom";
 export default function TradingTerminalPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountId = searchParams.get("account");
-  const { data: accounts = [], isLoading: accountsLoading } = useTradingAccounts();
+  const { data: accounts = EMPTY_LIST, isLoading: accountsLoading } = useTradingAccounts();
 
   const resolvedAccount = useMemo(() => {
     if (accountId) {
@@ -77,7 +82,7 @@ export default function TradingTerminalPage() {
   }, [accountId, resolvedProviderId, accounts, setSearchParams]);
 
   const dbAccountId = (resolvedAccount as { id?: string } | null)?.id ?? null;
-  const { data: positions = [], isLoading: positionsLoading } = useTradingPositions(dbAccountId);
+  const { data: positions = EMPTY_LIST, isLoading: positionsLoading } = useTradingPositions(dbAccountId);
   const { symbols, groupedSymbols, loading: symbolsLoading } = useAccountSymbols(dbAccountId);
 
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
@@ -359,7 +364,7 @@ export default function TradingTerminalPage() {
   // before the first live tick arrives (or while a symbol is quiet). Shares the
   // chart's React Query cache, so it's not an extra request. Market orders fill
   // at the broker's live price regardless — this is just the reference shown.
-  const { data: fallbackCandles = [] } = useMarketCandles(dbAccountId, selectedSymbol, timeframe, 2);
+  const { data: fallbackCandles = EMPTY_LIST } = useMarketCandles(dbAccountId, selectedSymbol, timeframe, 2);
   const fallbackPrice = fallbackCandles[fallbackCandles.length - 1]?.close ?? 0;
 
   const selectedTick = dbAccountId ? liveTicks.get(`${dbAccountId}::${selectedSymbol}`) ?? null : null;

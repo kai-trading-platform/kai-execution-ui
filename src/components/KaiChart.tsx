@@ -27,6 +27,11 @@ const CANDLE_PANE_ID = 'candle_pane';
 // user scrolls back in time (see setLoadDataCallback in KaiChart).
 const INITIAL_CANDLE_COUNT = 20000;
 
+// Module-level empty fallbacks so "no data yet" keeps a stable identity across
+// renders (see the comment where `candles` is derived below).
+const EMPTY_CANDLES: MarketCandle[] = [];
+const EMPTY_POSITIONS: CopyTradingPosition[] = [];
+
 interface DrawingTool {
   id: string;
   label: string;
@@ -192,15 +197,22 @@ export function KaiChart({
   const { ticks: liveTicks } = useMarketSocket();
   const liveTick = accountId && symbol ? liveTicks.get(`${accountId}::${symbol}`) ?? null : null;
 
-  const { data: candles = [], isLoading: loadingCandles, error: candlesError } = useMarketCandles(
+  const { data: candlesData, isLoading: loadingCandles, error: candlesError } = useMarketCandles(
     accountId ?? null,
     symbol ?? null,
     timeframe,
     INITIAL_CANDLE_COUNT,
   );
+  // Stable identity while the query has no data yet. A `= []` destructure
+  // default creates a NEW array on every render, which re-fires every effect
+  // keyed on [candles] on each render during loading — combined with the
+  // tick-driven render storm this exceeded React's nested-update limit
+  // ("Maximum update depth exceeded") and burned hundreds of renders in the
+  // first ~500ms after mount.
+  const candles = candlesData ?? EMPTY_CANDLES;
 
   const symbolPositions = useMemo(() => {
-    if (!symbol || !positions) return [];
+    if (!symbol || !positions) return EMPTY_POSITIONS;
     return positions.filter(p => p.symbol === symbol);
   }, [symbol, positions]);
 
