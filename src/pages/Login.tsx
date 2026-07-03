@@ -10,7 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Loader2, TrendingUp } from "lucide-react";
+import { Loader2 } from "lucide-react";
 
 /**
  * Self-contained login screen for the execution terminal.
@@ -49,11 +49,8 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm border-border/60">
         <CardHeader className="space-y-1">
-          <div className="flex items-center gap-2 text-primary">
-            <TrendingUp className="h-5 w-5" />
-            <span className="text-sm font-semibold tracking-wide">
-              KAI TERMINAL
-            </span>
+          <div className="flex items-center gap-2">
+            <img src="/apple-touch-icon.png" alt="Kai" className="h-9 w-9 rounded-lg" />
           </div>
           <CardTitle className="text-xl">Iniciar sesión</CardTitle>
           <CardDescription>
