@@ -13,6 +13,19 @@ import { KaiDatafeed } from '@/lib/chartPro/KaiDatafeed';
 import { CHART_PRO_PERIODS, periodForTimeframe } from '@/lib/chartPro/periods';
 import { useChartDrawings, type SavedDrawing } from '@/hooks/useChartDrawings';
 
+/**
+ * klinecharts espera una IANA válida ("America/New_York"). Nuestro setting usa el
+ * sentinel "local" (y podría venir vacío) → klinecharts tira "Timezone is error!!!"
+ * y, si pasáramos undefined, el fork defaultea a 'Asia/Shanghai'. Resolvemos
+ * "local"/vacío a la IANA real del navegador.
+ */
+function resolveTimezone(tz?: string): string {
+  if (!tz || tz === 'local') {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  }
+  return tz;
+}
+
 import type { CopyTradingPosition } from '@/modules/copyTrading/types';
 
 const DRAWINGS_GROUP = 'drawing_tools';
@@ -187,7 +200,7 @@ export function KaiChartPro({
       // EMAs de la estrategia (entrada/segunda/pullback/bias); la librería trae
       // 6/12/20 por defecto, así que forzamos calcParams vía el fork.
       mainIndicators: [{ name: 'EMA', calcParams: [10, 20, 55, 200] }],
-      timezone: timezone || undefined,
+      timezone: resolveTimezone(timezone),
       // El buscador interno cambió el símbolo → que el panel de orden lo siga.
       onSymbolChange: (ticker) => onSymbolChangeRef.current?.(ticker),
       // La PeriodBar interna cambió el timeframe → reflejarlo en el terminal.
@@ -221,8 +234,8 @@ export function KaiChartPro({
 
   // Cambio de timezone.
   useEffect(() => {
-    if (!chartRef.current || !timezone) return;
-    chartRef.current.setTimezone(timezone);
+    if (!chartRef.current) return;
+    chartRef.current.setTimezone(resolveTimezone(timezone));
   }, [timezone]);
 
   // Puente websocket → chart: cada tick del socket alimenta la vela en curso.
