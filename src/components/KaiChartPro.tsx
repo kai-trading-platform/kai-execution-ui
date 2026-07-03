@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { LineType } from 'klinecharts';
 import { KLineChartPro } from '@klinecharts/pro';
 import type { SymbolInfo } from '@klinecharts/pro';
 import '@klinecharts/pro/dist/klinecharts-pro.css';
@@ -10,9 +11,12 @@ import { formatSymbolDisplay } from '@/lib/symbolDisplay';
 import { KaiDatafeed } from '@/lib/chartPro/KaiDatafeed';
 import { CHART_PRO_PERIODS, periodForTimeframe } from '@/lib/chartPro/periods';
 
+import type { CopyTradingPosition } from '@/modules/copyTrading/types';
+
 interface KaiChartProProps {
   symbol?: string | null;
   accountId?: string | null;
+  positions?: CopyTradingPosition[];
   timeframe?: string;
   timezone?: string;
   className?: string;
@@ -24,7 +28,7 @@ interface KaiChartProProps {
  * terminal vía `KaiDatafeed` (histórico REST + ticks del websocket) y se maneja
  * detrás del flag `VITE_CHART_PRO` para no romper el chart actual.
  */
-export function KaiChartPro({ symbol, accountId, timeframe = '1h', timezone, className }: KaiChartProProps) {
+export function KaiChartPro({ symbol, accountId, positions, timeframe = '1h', timezone, className }: KaiChartProProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<KLineChartPro | null>(null);
   const datafeedRef = useRef<KaiDatafeed | null>(null);
@@ -147,6 +151,30 @@ export function KaiChartPro({ symbol, accountId, timeframe = '1h', timezone, cla
       datafeedRef.current?.pushTick(ticker, price, Date.now());
     });
   }, [ticks]);
+
+  // Dibuja entry / TP / SL de las posiciones del símbolo actual sobre el chart
+  // interno de klinecharts (expuesto por nuestro fork vía getChart()). Read-only
+  // por ahora (lock: true); el drag-para-editar TP/SL se agregará después.
+  useEffect(() => {
+    const pro = chartRef.current;
+    const chart = pro?.getChart?.();
+    if (!chart) return;
+    chart.removeOverlay({ groupId: 'positions' });
+    const symbolPositions = (positions ?? []).filter((p) => p.symbol === symbol);
+    for (const pos of symbolPositions) {
+      const line = (value: number, color: string) =>
+        chart.createOverlay({
+          name: 'horizontalStraightLine',
+          groupId: 'positions',
+          lock: true,
+          points: [{ value }],
+          styles: { line: { color, style: LineType.Dashed } },
+        });
+      if (Number.isFinite(pos.avgPrice)) line(pos.avgPrice, 'rgba(226,228,233,0.7)');
+      if (pos.tp && pos.tp > 0) line(pos.tp, '#2ed68d');
+      if (pos.sl && pos.sl > 0) line(pos.sl, '#ef5350');
+    }
+  }, [positions, symbol, currentSymbolInfo?.ticker, canCreate]);
 
   return (
     <div className={cn('relative min-h-0 flex-1', className)}>

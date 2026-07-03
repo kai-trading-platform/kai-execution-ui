@@ -685,6 +685,7 @@ export default function TradingTerminalPage() {
               <KaiChartPro
                 symbol={selectedSymbol}
                 accountId={dbAccountId}
+                positions={uiPositions}
                 timeframe={timeframe}
                 timezone={settings.timezone}
               />
@@ -936,7 +937,6 @@ function TopHeader({
       <div className="flex items-center gap-3 sm:gap-6 min-w-0">
         <div className="flex items-center gap-2 shrink-0">
           <img src="/apple-touch-icon.png" alt="Kai" className="h-7 w-7 rounded-lg" />
-          <span className="text-lg sm:text-xl font-bold tracking-tight">Kai</span>
         </div>
         <div className="relative" ref={ref}>
           <button
@@ -1294,12 +1294,6 @@ function Watchlist({
             </div>
           );
         })}
-      </div>
-      <div className="px-3 py-2 border-t border-white/10">
-        <Button variant="ghost" className="w-full justify-start text-xs text-white/60 hover:text-white hover:bg-white/5">
-          <Plus className="h-3 w-3 mr-1.5" />
-          Agregar instrumento
-        </Button>
       </div>
     </>
   );

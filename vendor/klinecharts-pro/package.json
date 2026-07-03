@@ -1,0 +1,15 @@
+{
+  "name": "@klinecharts/pro",
+  "version": "0.1.1-kai",
+  "description": "Fork Kai de @klinecharts/pro (Apache-2.0). Añade getChart() para overlays propios.",
+  "type": "module",
+  "main": "./dist/klinecharts-pro.umd.js",
+  "module": "./dist/klinecharts-pro.js",
+  "types": "./dist/index.d.ts",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsc && vite build && dts-bundle-generator --no-banner true --umd-module-name klinechartspro -o dist/index.d.ts src/index.ts"
+  },
+  "dependencies": { "lodash": "^4.17.21", "solid-js": "^1.6.11" },
+  "peerDependencies": { "klinecharts": ">=9.0.0" }
+}

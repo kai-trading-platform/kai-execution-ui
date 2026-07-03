@@ -17,7 +17,8 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@klinecharts/pro": ["./vendor/klinecharts-pro/dist/index.d.ts"]
     }
   },
   "include": ["src"],
