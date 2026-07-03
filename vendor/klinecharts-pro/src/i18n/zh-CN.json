@@ -67,6 +67,7 @@
   "ray_line": "射线",
   "segment": "线段",
   "arrow": "箭头",
+  "simple_annotation": "文字/注释",
   "price_line": "价格线",
   "price_channel_line": "价格通道线",
   "parallel_straight_line": "平行直线",

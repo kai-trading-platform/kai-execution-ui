@@ -688,6 +688,10 @@ export default function TradingTerminalPage() {
                 positions={uiPositions}
                 timeframe={timeframe}
                 timezone={settings.timezone}
+                showPositions={settings.showPositions}
+                showTpSl={settings.showTpSl}
+                onSymbolChange={openSymbol}
+                onPeriodChange={setTimeframe}
               />
             </ErrorBoundary>
           ) : (

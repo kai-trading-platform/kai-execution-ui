@@ -12,7 +12,7 @@
  * limitations under the License.
  */
 
-import { KLineData, Styles, DeepPartial, Chart, Nullable } from 'klinecharts'
+import { KLineData, Styles, DeepPartial, Chart, Nullable, Overlay } from 'klinecharts'
 
 export interface SymbolInfo {
   ticker: string
@@ -35,6 +35,18 @@ export interface Period {
 
 export type DatafeedSubscribeCallback = (data: KLineData) => void
 
+// Fork Kai: un indicador principal puede declararse sólo por su nombre
+// (comportamiento original) o con `calcParams` para sobreescribir los períodos
+// por defecto de la librería (p.ej. EMA 6/12/20 → 10/20/55/200).
+export interface MainIndicatorSpec {
+  name: string
+  calcParams?: number[]
+}
+
+// Fork Kai: tipo de evento que la app recibe cuando el usuario crea / mueve /
+// borra un overlay desde la DrawingBar nativa (para poder persistirlos).
+export type OverlayEventType = 'created' | 'updated' | 'removed'
+
 export interface Datafeed {
   searchSymbols (search?: string): Promise<SymbolInfo[]>
   getHistoryKLineData (symbol: SymbolInfo, period: Period, from: number, to: number): Promise<KLineData[]>
@@ -53,9 +65,18 @@ export interface ChartProOptions {
   period: Period
   periods?: Period[]
   timezone?: string
-  mainIndicators?: string[]
+  // Fork Kai: acepta nombres sueltos o specs con calcParams (ver MainIndicatorSpec).
+  mainIndicators?: Array<string | MainIndicatorSpec>
   subIndicators?: string[]
   datafeed: Datafeed
+  // Fork Kai: el buscador interno de Pro cambia sólo su signal de símbolo; este
+  // callback deja que la app siga al chart (panel de orden, BUY/SELL, etc.).
+  onSymbolChange?: (ticker: string) => void
+  // Fork Kai: idem para el timeframe elegido desde la PeriodBar interna.
+  onPeriodChange?: (period: Period) => void
+  // Fork Kai: notifica overlays creados/movidos/borrados desde la DrawingBar
+  // nativa para que la app pueda persistirlos.
+  onOverlayEvent?: (type: OverlayEventType, overlay: Overlay) => void
 }
 
 export interface ChartPro {

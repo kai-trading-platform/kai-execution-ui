@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { LineType } from 'klinecharts';
+import type { Overlay, OverlayCreate } from 'klinecharts';
 import { KLineChartPro } from '@klinecharts/pro';
-import type { SymbolInfo } from '@klinecharts/pro';
+import type { SymbolInfo, Period } from '@klinecharts/pro';
 import '@klinecharts/pro/dist/klinecharts-pro.css';
 
 import { cn } from '@/lib/utils';
@@ -10,8 +11,12 @@ import { useMarketSocket } from '@/contexts/MarketSocketContext';
 import { formatSymbolDisplay } from '@/lib/symbolDisplay';
 import { KaiDatafeed } from '@/lib/chartPro/KaiDatafeed';
 import { CHART_PRO_PERIODS, periodForTimeframe } from '@/lib/chartPro/periods';
+import { useChartDrawings, type SavedDrawing } from '@/hooks/useChartDrawings';
 
 import type { CopyTradingPosition } from '@/modules/copyTrading/types';
+
+const DRAWINGS_GROUP = 'drawing_tools';
+const POSITIONS_GROUP = 'positions';
 
 interface KaiChartProProps {
   symbol?: string | null;
@@ -20,6 +25,13 @@ interface KaiChartProProps {
   timeframe?: string;
   timezone?: string;
   className?: string;
+  // Mostrar/ocultar líneas de entrada y TP/SL (ajustes del terminal).
+  showPositions?: boolean;
+  showTpSl?: boolean;
+  // El buscador interno de Pro cambió el símbolo → que el terminal lo siga.
+  onSymbolChange?: (ticker: string) => void;
+  // La PeriodBar interna cambió el timeframe → reflejarlo en el terminal.
+  onPeriodChange?: (timeframe: string) => void;
 }
 
 /**
@@ -28,13 +40,25 @@ interface KaiChartProProps {
  * terminal vía `KaiDatafeed` (histórico REST + ticks del websocket) y se maneja
  * detrás del flag `VITE_CHART_PRO` para no romper el chart actual.
  */
-export function KaiChartPro({ symbol, accountId, positions, timeframe = '1h', timezone, className }: KaiChartProProps) {
+export function KaiChartPro({
+  symbol,
+  accountId,
+  positions,
+  timeframe = '1h',
+  timezone,
+  className,
+  showPositions = true,
+  showTpSl = true,
+  onSymbolChange,
+  onPeriodChange,
+}: KaiChartProProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<KLineChartPro | null>(null);
   const datafeedRef = useRef<KaiDatafeed | null>(null);
 
   const { symbols: accountSymbols } = useAccountSymbols(accountId ?? undefined);
   const { ticks, subscribe, unsubscribe } = useMarketSocket();
+  const { getDrawings, saveDrawing, removeDrawing } = useChartDrawings();
 
   // AccountSymbol[] → SymbolInfo[], deduplicado por display (misma lógica que la
   // watchlist: `USTECm` y `USTEC_x100m` colapsan a "USTEC").
@@ -81,6 +105,62 @@ export function KaiChartPro({ symbol, accountId, positions, timeframe = '1h', ti
   subscribeRef.current = subscribe;
   unsubscribeRef.current = unsubscribe;
 
+  // El chart se crea una sola vez; sus callbacks leen props/estado frescos vía refs.
+  const symbolRef = useRef<string | null | undefined>(symbol);
+  symbolRef.current = symbol;
+  const onSymbolChangeRef = useRef(onSymbolChange);
+  onSymbolChangeRef.current = onSymbolChange;
+  const onPeriodChangeRef = useRef(onPeriodChange);
+  onPeriodChangeRef.current = onPeriodChange;
+  const getDrawingsRef = useRef(getDrawings);
+  getDrawingsRef.current = getDrawings;
+  const saveDrawingRef = useRef(saveDrawing);
+  saveDrawingRef.current = saveDrawing;
+  const removeDrawingRef = useRef(removeDrawing);
+  removeDrawingRef.current = removeDrawing;
+
+  // Guardia: durante la rehidratación limpiamos+recreamos overlays y NO queremos
+  // que esos removes/creates programáticos se persistan (borrarían el símbolo
+  // recién seleccionado).
+  const rehydratingRef = useRef(false);
+
+  // Persistencia central: toda alta/movimiento/borrado de un overlay de dibujo
+  // pasa por aquí (tanto los creados desde la DrawingBar nativa vía onOverlayEvent
+  // del fork, como los rehidratados que llevan sus propios callbacks).
+  const persist = useCallback((type: 'created' | 'updated' | 'removed', overlay: Overlay) => {
+    if (rehydratingRef.current) return;
+    if (overlay.groupId !== DRAWINGS_GROUP) return;
+    const sym = symbolRef.current;
+    if (!sym) return;
+    if (type === 'removed') removeDrawingRef.current(sym, overlay.id);
+    else saveDrawingRef.current(sym, overlay);
+  }, []);
+
+  // SavedDrawing → OverlayCreate re-adjuntando los callbacks de persistencia para
+  // que mover/borrar un dibujo rehidratado siga guardándose.
+  const overlayFromSaved = useCallback(
+    (d: SavedDrawing): OverlayCreate => ({
+      id: d.id,
+      groupId: DRAWINGS_GROUP,
+      name: d.name,
+      points: d.points,
+      extendData: d.extendData,
+      styles: d.styles,
+      lock: d.lock,
+      visible: d.visible,
+      mode: d.mode,
+      onPressedMoveEnd: (event) => {
+        persist('updated', event.overlay);
+        return false;
+      },
+      onRemoved: (event) => {
+        persist('removed', event.overlay);
+        return false;
+      },
+    }),
+    [persist],
+  );
+
   if (!datafeedRef.current) {
     datafeedRef.current = new KaiDatafeed({
       getAccountId: () => accountIdRef.current,
@@ -104,8 +184,16 @@ export function KaiChartPro({ symbol, accountId, positions, timeframe = '1h', ti
       // Pro trae zh-CN por defecto; forzamos inglés (no bundlea es-ES).
       locale: 'en-US',
       drawingBarVisible: true,
-      mainIndicators: ['EMA'],
+      // EMAs de la estrategia (entrada/segunda/pullback/bias); la librería trae
+      // 6/12/20 por defecto, así que forzamos calcParams vía el fork.
+      mainIndicators: [{ name: 'EMA', calcParams: [10, 20, 55, 200] }],
       timezone: timezone || undefined,
+      // El buscador interno cambió el símbolo → que el panel de orden lo siga.
+      onSymbolChange: (ticker) => onSymbolChangeRef.current?.(ticker),
+      // La PeriodBar interna cambió el timeframe → reflejarlo en el terminal.
+      onPeriodChange: (period: Period) => onPeriodChangeRef.current?.(period.text),
+      // Overlays creados/movidos/borrados desde la DrawingBar nativa → persistir.
+      onOverlayEvent: (evType, overlay) => persist(evType, overlay),
     });
     const container = containerRef.current;
     return () => {
@@ -152,29 +240,48 @@ export function KaiChartPro({ symbol, accountId, positions, timeframe = '1h', ti
     });
   }, [ticks]);
 
+  // Persistencia de dibujos: al cambiar de símbolo, limpiar el grupo
+  // 'drawing_tools' del símbolo anterior y rehidratar los guardados del nuevo.
+  // NUNCA se toca el grupo 'positions' (líneas de entry/TP/SL).
+  useEffect(() => {
+    const chart = chartRef.current?.getChart?.();
+    if (!chart || !symbol) return;
+    rehydratingRef.current = true;
+    try {
+      chart.removeOverlay({ groupId: DRAWINGS_GROUP });
+      const saved = getDrawingsRef.current(symbol);
+      for (const d of saved) {
+        chart.createOverlay(overlayFromSaved(d));
+      }
+    } finally {
+      rehydratingRef.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, canCreate]);
+
   // Dibuja entry / TP / SL de las posiciones del símbolo actual sobre el chart
   // interno de klinecharts (expuesto por nuestro fork vía getChart()). Read-only
-  // por ahora (lock: true); el drag-para-editar TP/SL se agregará después.
+  // por ahora (lock: true); respeta los ajustes showPositions / showTpSl.
   useEffect(() => {
     const pro = chartRef.current;
     const chart = pro?.getChart?.();
     if (!chart) return;
-    chart.removeOverlay({ groupId: 'positions' });
+    chart.removeOverlay({ groupId: POSITIONS_GROUP });
     const symbolPositions = (positions ?? []).filter((p) => p.symbol === symbol);
     for (const pos of symbolPositions) {
       const line = (value: number, color: string) =>
         chart.createOverlay({
           name: 'horizontalStraightLine',
-          groupId: 'positions',
+          groupId: POSITIONS_GROUP,
           lock: true,
           points: [{ value }],
           styles: { line: { color, style: LineType.Dashed } },
         });
-      if (Number.isFinite(pos.avgPrice)) line(pos.avgPrice, 'rgba(226,228,233,0.7)');
-      if (pos.tp && pos.tp > 0) line(pos.tp, '#2ed68d');
-      if (pos.sl && pos.sl > 0) line(pos.sl, '#ef5350');
+      if (showPositions && Number.isFinite(pos.avgPrice)) line(pos.avgPrice, 'rgba(226,228,233,0.7)');
+      if (showTpSl && pos.tp && pos.tp > 0) line(pos.tp, '#2ed68d');
+      if (showTpSl && pos.sl && pos.sl > 0) line(pos.sl, '#ef5350');
     }
-  }, [positions, symbol, currentSymbolInfo?.ticker, canCreate]);
+  }, [positions, symbol, currentSymbolInfo?.ticker, canCreate, showPositions, showTpSl]);
 
   return (
     <div className={cn('relative min-h-0 flex-1', className)}>

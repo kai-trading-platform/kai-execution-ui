@@ -583,3 +583,92 @@ body[data-scroll-locked], [data-scroll-locked] {
     max-width: 100% !important;
   }
 }
+
+/* ── @klinecharts/pro theme seam ─────────────────────────────────────────────
+   El fork trae un dark propio (#151517 / #1c1c1f) que choca con la paleta del
+   terminal (#0a0e16 / #0b1019 / #121826). Sobreescribimos sus custom props para
+   que el chart Pro se funda con la app. No requiere rebuild del fork. */
+.klinecharts-pro[data-theme="dark"] {
+  --klinecharts-pro-primary-color: #4c82e3;
+  --klinecharts-pro-hover-background-color: rgba(255, 255, 255, 0.06);
+  --klinecharts-pro-background-color: #0a0e16;
+  --klinecharts-pro-popover-background-color: #121826;
+  --klinecharts-pro-text-color: #e6e9ef;
+  --klinecharts-pro-text-second-color: rgba(255, 255, 255, 0.55);
+  --klinecharts-pro-border-color: rgba(255, 255, 255, 0.10);
+  --klinecharts-pro-selected-color: rgba(76, 130, 227, 0.15);
+}
+
+/* @klinecharts/pro — estilos de nuestras adiciones del fork (popover de texto y
+   aviso de error del datafeed). El CSS del widget se sirve desde node_modules
+   (ver alias en vite.config.ts), así que estas clases nuevas viven aquí en la
+   app en vez de en el .less del fork. Usan los mismos custom props del tema. */
+.klinecharts-pro-data-error {
+  position: absolute;
+  left: 50%;
+  top: 16px;
+  transform: translateX(-50%);
+  z-index: 22;
+  max-width: 80%;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  text-align: center;
+  color: var(--klinecharts-pro-text-color);
+  background-color: var(--klinecharts-pro-popover-background-color);
+  border: solid 1px var(--klinecharts-pro-border-color);
+  box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.35);
+}
+.klinecharts-pro-annotation-popover {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 260px;
+  padding: 14px;
+  border-radius: 8px;
+  background-color: var(--klinecharts-pro-popover-background-color);
+  border: solid 1px var(--klinecharts-pro-border-color);
+  box-shadow: 0 6px 20px 0 rgba(0, 0, 0, 0.4);
+}
+.klinecharts-pro-annotation-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+  color: var(--klinecharts-pro-text-color);
+  background-color: var(--klinecharts-pro-background-color);
+  border: solid 1px var(--klinecharts-pro-border-color);
+}
+.klinecharts-pro-annotation-input:focus {
+  border-color: var(--klinecharts-pro-primary-color);
+}
+.klinecharts-pro-annotation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.klinecharts-pro-annotation-actions button {
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--klinecharts-pro-text-color);
+  background-color: transparent;
+  border: solid 1px var(--klinecharts-pro-border-color);
+  transition: all 0.2s;
+}
+.klinecharts-pro-annotation-actions button:hover {
+  background-color: var(--klinecharts-pro-hover-background-color);
+}
+.klinecharts-pro-annotation-actions button.primary {
+  color: #fff;
+  border-color: var(--klinecharts-pro-primary-color);
+  background-color: var(--klinecharts-pro-primary-color);
+}

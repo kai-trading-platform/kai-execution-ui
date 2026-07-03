@@ -64,6 +64,7 @@
   "ray_line": "Ray",
   "segment": "Segment",
   "arrow": "Arrow",
+  "simple_annotation": "Text / Note",
   "price_line": "Price Line",
   "price_channel_line": "Price Channel Line",
   "parallel_straight_line": "Parallel Line",

@@ -23,6 +23,8 @@ export default defineConfig(() => {
         server: {
             host: "::",
             port: 5174,
+            // Aceptar el subdominio público del túnel (cloudflared → terminal.scyra.dev)
+            // además de localhost. Sin esto el dev server de Vite rechaza el Host.
             allowedHosts: [".scyra.dev", "localhost", "127.0.0.1"],
             proxy: proxyConfig,
         },
@@ -61,9 +63,17 @@ export default defineConfig(() => {
         },
         plugins: [react()],
         resolve: {
-            alias: {
-                "@": path.resolve(__dirname, "./src"),
-            },
+            // Array form: el alias regex de @klinecharts/pro debe ser exacto para no
+            // interceptar el import del CSS (`@klinecharts/pro/dist/...css`, que sigue
+            // saliendo de node_modules). Apuntamos el paquete a NUESTRO fork vendored
+            // (vendor/klinecharts-pro) que expone getChart() para dibujar posiciones.
+            alias: [
+                { find: "@", replacement: path.resolve(__dirname, "./src") },
+                {
+                    find: /^@klinecharts\/pro$/,
+                    replacement: path.resolve(__dirname, "./vendor/klinecharts-pro/dist/klinecharts-pro.js"),
+                },
+            ],
         },
     };
 });

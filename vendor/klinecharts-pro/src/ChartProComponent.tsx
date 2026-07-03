@@ -16,7 +16,8 @@ import { createSignal, createEffect, onMount, Show, onCleanup, startTransition, 
 
 import {
   init, dispose, utils, Nullable, Chart, OverlayMode, Styles,
-  TooltipIconPosition, ActionType, PaneOptions, Indicator, DomPosition, FormatDateType
+  TooltipIconPosition, ActionType, PaneOptions, Indicator, DomPosition, FormatDateType,
+  OverlayCreate, OverlayEvent
 } from 'klinecharts'
 
 import lodashSet from 'lodash/set'
@@ -42,12 +43,15 @@ interface PrevSymbolPeriod {
   period: Period
 }
 
-function createIndicator (widget: Nullable<Chart>, indicatorName: string, isStack?: boolean, paneOptions?: PaneOptions): Nullable<string> {
+function createIndicator (widget: Nullable<Chart>, indicatorName: string, isStack?: boolean, paneOptions?: PaneOptions, calcParams?: number[]): Nullable<string> {
   if (indicatorName === 'VOL') {
     paneOptions = { gap: { bottom: 2 }, ...paneOptions }
   }
   return widget?.createIndicator({
     name: indicatorName,
+    // Fork Kai: si la app pasó calcParams (p.ej. EMA 10/20/55/200) los aplicamos;
+    // si no, klinecharts usa sus defaults.
+    ...(calcParams && calcParams.length > 0 ? { calcParams } : {}),
     // @ts-expect-error
     createTooltipDataSource: ({ indicator, defaultStyles }) => {
       const icons = []
@@ -80,7 +84,16 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
   const [symbol, setSymbol] = createSignal(props.symbol)
   const [period, setPeriod] = createSignal(props.period)
   const [indicatorModalVisible, setIndicatorModalVisible] = createSignal(false)
-  const [mainIndicators, setMainIndicators] = createSignal([...(props.mainIndicators!)])
+  // Fork Kai: los indicadores principales pueden venir como strings o como
+  // specs { name, calcParams }. Normalizamos a nombres (el resto del componente
+  // trabaja con string[]) y guardamos los calcParams en un mapa aparte.
+  const mainIndicatorParams: Record<string, number[]> = {}
+  const normalizedMainIndicators = (props.mainIndicators ?? []).map(item => {
+    if (typeof item === 'string') return item
+    if (item.calcParams && item.calcParams.length > 0) mainIndicatorParams[item.name] = item.calcParams
+    return item.name
+  })
+  const [mainIndicators, setMainIndicators] = createSignal([...normalizedMainIndicators])
   const [subIndicators, setSubIndicators] = createSignal({})
 
   const [timezoneModalVisible, setTimezoneModalVisible] = createSignal(false)
@@ -96,6 +109,14 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
   const [symbolSearchModalVisible, setSymbolSearchModalVisible] = createSignal(false)
 
   const [loadingVisible, setLoadingVisible] = createSignal(false)
+
+  // Fork Kai: error del datafeed (bridge MT5 puede responder 503). Cuando falla
+  // el fetch de histórico surfaceamos un mensaje en vez de dejar el spinner.
+  const [dataErrorVisible, setDataErrorVisible] = createSignal(false)
+
+  // Fork Kai: popover para capturar el texto de una anotación (herramienta de
+  // texto). Se abre al terminar de dibujar un `simpleAnnotation`.
+  const [annotationPrompt, setAnnotationPrompt] = createSignal<Nullable<{ id: string, value: string }>>(null)
 
   const [indicatorSettingModalParams, setIndicatorSettingModalParams] = createSignal({
     visible: false, indicatorName: '', paneId: '', calcParams: [] as Array<any>
@@ -235,7 +256,7 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
     }
 
     mainIndicators().forEach(indicator => {
-      createIndicator(widget, indicator, true, { id: 'candle_pane' })
+      createIndicator(widget, indicator, true, { id: 'candle_pane' }, mainIndicatorParams[indicator])
     })
     const subIndicatorMap = {}
     props.subIndicators!.forEach(indicator => {
@@ -249,12 +270,21 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
     widget?.loadMore(timestamp => {
       loading = true
       const get = async () => {
-        const p = period()
-        const [to] = adjustFromTo(p, timestamp!, 1)
-        const [from] = adjustFromTo(p, to, 500)
-        const kLineDataList = await props.datafeed.getHistoryKLineData(symbol(), p, from, to)
-        widget?.applyMoreData(kLineDataList, kLineDataList.length > 0)
-        loading = false
+        try {
+          const p = period()
+          const [to] = adjustFromTo(p, timestamp!, 1)
+          const [from] = adjustFromTo(p, to, 500)
+          const kLineDataList = await props.datafeed.getHistoryKLineData(symbol(), p, from, to)
+          widget?.applyMoreData(kLineDataList, kLineDataList.length > 0)
+        } catch (e) {
+          // Fork Kai: el bridge MT5 puede fallar (503). No dejamos `loading`
+          // colgado (bloquearía futuros loadMore); cortamos el paginado.
+          widget?.applyMoreData([], false)
+          // eslint-disable-next-line no-console
+          console.error('[klinecharts-pro] loadMore failed', e)
+        } finally {
+          loading = false
+        }
       }
       get()
     })
@@ -320,15 +350,27 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
       const p = period()
       loading = true
       setLoadingVisible(true)
+      setDataErrorVisible(false)
       const get = async () => {
-        const [from, to] = adjustFromTo(p, new Date().getTime(), 500)
-        const kLineDataList = await props.datafeed.getHistoryKLineData(s, p, from, to)
-        widget?.applyNewData(kLineDataList, kLineDataList.length > 0)
-        props.datafeed.subscribe(s, p, data => {
-          widget?.updateData(data)
-        })
-        loading = false
-        setLoadingVisible(false)
+        try {
+          const [from, to] = adjustFromTo(p, new Date().getTime(), 500)
+          const kLineDataList = await props.datafeed.getHistoryKLineData(s, p, from, to)
+          widget?.applyNewData(kLineDataList, kLineDataList.length > 0)
+          props.datafeed.subscribe(s, p, data => {
+            widget?.updateData(data)
+          })
+          setDataErrorVisible(false)
+        } catch (e) {
+          // Fork Kai: sin try/catch, un fallo del bridge (503) dejaba el spinner
+          // girando para siempre. Reseteamos y mostramos un aviso.
+          widget?.applyNewData([], false)
+          setDataErrorVisible(true)
+          // eslint-disable-next-line no-console
+          console.error('[klinecharts-pro] getHistoryKLineData failed', e)
+        } finally {
+          loading = false
+          setLoadingVisible(false)
+        }
       }
       get()
       return { symbol: s, period: p }
@@ -441,6 +483,48 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
     }
   })
 
+  // Fork Kai: crea un overlay desde la DrawingBar nativa. Le adjunta callbacks
+  // de persistencia (created/updated/removed → props.onOverlayEvent) para que la
+  // app pueda guardar los dibujos en localStorage, y para la herramienta de
+  // texto abre el popover que captura el contenido de la anotación.
+  const handleCreateOverlay = (overlay: OverlayCreate) => {
+    const merged: OverlayCreate = {
+      ...overlay,
+      onDrawEnd: (event: OverlayEvent) => {
+        const o = event.overlay
+        if (o.name === 'simpleAnnotation') {
+          setAnnotationPrompt({ id: o.id, value: (typeof o.extendData === 'string' ? o.extendData : '') })
+        }
+        props.onOverlayEvent?.('created', o)
+        return false
+      },
+      onPressedMoveEnd: (event: OverlayEvent) => {
+        props.onOverlayEvent?.('updated', event.overlay)
+        return false
+      },
+      onRemoved: (event: OverlayEvent) => {
+        props.onOverlayEvent?.('removed', event.overlay)
+        return false
+      }
+    }
+    widget?.createOverlay(merged)
+  }
+
+  const confirmAnnotation = () => {
+    const prompt = annotationPrompt()
+    if (!prompt) return
+    const text = prompt.value.trim()
+    widget?.overrideOverlay({ id: prompt.id, extendData: text })
+    // Persistir el texto: re-emitimos el overlay ya actualizado.
+    const o = widget?.getOverlayById(prompt.id)
+    if (o) props.onOverlayEvent?.('updated', o)
+    setAnnotationPrompt(null)
+  }
+
+  const cancelAnnotation = () => {
+    setAnnotationPrompt(null)
+  }
+
   return (
     <>
       <i class="icon-close klinecharts-pro-load-icon"/>
@@ -448,7 +532,12 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
         <SymbolSearchModal
           locale={props.locale}
           datafeed={props.datafeed}
-          onSymbolSelected={symbol => { setSymbol(symbol) }}
+          onSymbolSelected={symbol => {
+            setSymbol(symbol)
+            // Fork Kai: avisar a la app para que el panel de orden / BUY-SELL
+            // siga al símbolo del chart (evita operar un símbolo distinto).
+            props.onSymbolChange?.(symbol.ticker)
+          }}
           onClose={() => { setSymbolSearchModalVisible(false) }}/>
       </Show>
       <Show when={indicatorModalVisible()}>
@@ -543,7 +632,11 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
           } catch (e) {}    
         }}
         onSymbolClick={() => { setSymbolSearchModalVisible(!symbolSearchModalVisible()) }}
-        onPeriodChange={setPeriod}
+        onPeriodChange={p => {
+          setPeriod(p)
+          // Fork Kai: reflejar el timeframe elegido en la app (state + persist).
+          props.onPeriodChange?.(p)
+        }}
         onIndicatorClick={() => { setIndicatorModalVisible((visible => !visible)) }}
         onTimezoneClick={() => { setTimezoneModalVisible((visible => !visible)) }}
         onSettingClick={() => { setSettingModalVisible((visible => !visible)) }}
@@ -559,10 +652,36 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
         <Show when={loadingVisible()}>
           <Loading/>
         </Show>
+        <Show when={dataErrorVisible() && !loadingVisible()}>
+          <div class="klinecharts-pro-data-error">
+            <span>No se pudieron cargar los datos del gráfico. Reintenta cambiando de símbolo o timeframe.</span>
+          </div>
+        </Show>
+        <Show when={annotationPrompt()}>
+          <div class="klinecharts-pro-annotation-popover">
+            <input
+              class="klinecharts-pro-annotation-input"
+              autofocus
+              placeholder="Escribe una nota…"
+              value={annotationPrompt()!.value}
+              onInput={e => {
+                const value = (e.currentTarget as HTMLInputElement).value
+                setAnnotationPrompt(prev => (prev ? { ...prev, value } : prev))
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { confirmAnnotation() }
+                else if (e.key === 'Escape') { cancelAnnotation() }
+              }}/>
+            <div class="klinecharts-pro-annotation-actions">
+              <button type="button" onClick={cancelAnnotation}>Cancelar</button>
+              <button type="button" class="primary" onClick={confirmAnnotation}>Guardar</button>
+            </div>
+          </div>
+        </Show>
         <Show when={drawingBarVisible()}>
           <DrawingBar
             locale={props.locale}
-            onDrawingItemClick={overlay => { widget?.createOverlay(overlay) }}
+            onDrawingItemClick={handleCreateOverlay}
             onModeChange={mode => { widget?.overrideOverlay({ mode: mode as OverlayMode }) }}
             onLockChange={lock => { widget?.overrideOverlay({ lock }) }}
             onVisibleChange={visible => { widget?.overrideOverlay({ visible }) }}

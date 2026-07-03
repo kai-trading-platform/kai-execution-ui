@@ -23,6 +23,7 @@ import {
   createMagnetOptions,
   Icon
 } from './icons'
+import i18n from '../../i18n'
 
 export interface DrawingBarProps {
   locale: string
@@ -100,7 +101,10 @@ const DrawingBar: Component<DrawingBarProps> = props => {
                       <li
                         onClick={() => {
                           item.setter(data.key)
-                          props.onDrawingItemClick({ name: data.key, lock: lock(), mode: mode() as OverlayMode })
+                          // Fork Kai: incluir groupId/visible como el icono principal
+                          // para que estos overlays también entren en el grupo
+                          // 'drawing_tools' (persistencia + botón "borrar dibujos").
+                          props.onDrawingItemClick({ groupId: GROUP_ID, name: data.key, visible: visible(), lock: lock(), mode: mode() as OverlayMode })
                           setPopoverKey('')
                         }}>
                         <Icon name={data.key}/>
@@ -114,6 +118,18 @@ const DrawingBar: Component<DrawingBarProps> = props => {
           </div>
         ))
       }
+      <span class="split-line"/>
+      {/* Fork Kai: herramienta de texto / anotación (simpleAnnotation). Vive en
+          el mismo grupo 'drawing_tools' para que el borrado masivo y la
+          persistencia la incluyan. */}
+      <div class="item">
+        <span
+          style="width:32px;height:32px"
+          title={i18n('simple_annotation', props.locale)}
+          onClick={() => { props.onDrawingItemClick({ groupId: GROUP_ID, name: 'simpleAnnotation', visible: visible(), lock: lock(), mode: mode() as OverlayMode }) }}>
+          <Icon name="simpleAnnotation" />
+        </span>
+      </div>
       <span class="split-line"/>
       <div
         class="item"

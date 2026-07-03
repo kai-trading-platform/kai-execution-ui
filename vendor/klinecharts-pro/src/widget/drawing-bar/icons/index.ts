@@ -24,6 +24,7 @@ import straightLine from './straightLine'
 import rayLine from './rayLine'
 import segment from './segment'
 import arrow from './arrow'
+import simpleAnnotation from './simpleAnnotation'
 import priceLine from './priceLine'
 import priceChannelLine from './priceChannelLine'
 import parallelStraightLine from './parallelStraightLine'
@@ -71,6 +72,7 @@ export const mapping = {
   rayLine,
   segment,
   arrow,
+  simpleAnnotation,
   priceLine,
   priceChannelLine,
   parallelStraightLine,

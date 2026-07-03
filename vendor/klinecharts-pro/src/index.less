@@ -79,4 +79,76 @@
       width: 100%;
     }
   }
+  // Fork Kai: aviso cuando el datafeed falla (bridge MT5 503) — antes el spinner
+  // quedaba girando indefinidamente.
+  &-data-error {
+    position: absolute;
+    left: 50%;
+    top: 16px;
+    transform: translateX(-50%);
+    z-index: 22;
+    max-width: 80%;
+    padding: 8px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    text-align: center;
+    color: var(--klinecharts-pro-text-color);
+    background-color: var(--klinecharts-pro-popover-background-color);
+    border: solid 1px var(--klinecharts-pro-border-color);
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, .35);
+  }
+  // Fork Kai: popover para capturar el texto de la herramienta de anotación.
+  &-annotation-popover {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 25;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 260px;
+    padding: 14px;
+    border-radius: 8px;
+    background-color: var(--klinecharts-pro-popover-background-color);
+    border: solid 1px var(--klinecharts-pro-border-color);
+    box-shadow: 0 6px 20px 0 rgba(0, 0, 0, .4);
+  }
+  &-annotation-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    outline: none;
+    color: var(--klinecharts-pro-text-color);
+    background-color: var(--klinecharts-pro-background-color);
+    border: solid 1px var(--klinecharts-pro-border-color);
+    &:focus {
+      border-color: var(--klinecharts-pro-primary-color);
+    }
+  }
+  &-annotation-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    button {
+      cursor: pointer;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--klinecharts-pro-text-color);
+      background-color: transparent;
+      border: solid 1px var(--klinecharts-pro-border-color);
+      transition: all .2s;
+      &:hover {
+        background-color: var(--klinecharts-pro-hover-background-color);
+      }
+      &.primary {
+        color: #fff;
+        border-color: var(--klinecharts-pro-primary-color);
+        background-color: var(--klinecharts-pro-primary-color);
+      }
+    }
+  }
 }
