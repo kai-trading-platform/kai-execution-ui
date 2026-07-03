@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react';
-import { init, dispose, LineType, ActionType, OverlayMode, LoadDataType } from 'klinecharts';
+import { init, dispose, registerOverlay, LineType, ActionType, OverlayMode, LoadDataType } from 'klinecharts';
 import type { Chart, KLineData, OverlayEvent } from 'klinecharts';
 import {
   Camera, Search, AlertCircle, BarChart2, TrendingUp, TrendingDown, Eraser,
@@ -73,6 +73,45 @@ const INDICATOR_CATEGORIES = {
 
 // Indicators that overlay the candle pane instead of opening their own sub-pane.
 const MAIN_PANE_INDICATORS = new Set(['MA', 'EMA', 'BOLL', 'SAR', 'BBI']);
+
+// Períodos por defecto alineados con la estrategia. Los EMAs de los videos que
+// usamos son 10/20/55/200 (entrada/segunda/pullback/bias); klinecharts trae EMA
+// con [6,12,20] por defecto, así que lo sobreescribimos al crear el indicador.
+const INDICATOR_DEFAULT_PARAMS: Record<string, number[]> = {
+  EMA: [10, 20, 55, 200],
+};
+
+// klinecharts 9.8.12 NO trae un overlay `triangle` nativo, así que el botón de
+// triángulo hacía click sin dibujar nada (createOverlay('triangle') es no-op
+// silencioso para nombres desconocidos). Registramos uno propio de 3 puntos.
+let triangleOverlayRegistered = false;
+function ensureTriangleOverlay() {
+  if (triangleOverlayRegistered) return;
+  triangleOverlayRegistered = true;
+  registerOverlay({
+    name: 'triangle',
+    totalStep: 4, // 3 puntos + el paso inicial
+    needDefaultPointFigure: true,
+    needDefaultXAxisFigure: true,
+    needDefaultYAxisFigure: true,
+    createPointFigures: ({ coordinates }) => {
+      if (coordinates.length < 2) return [];
+      return [
+        {
+          type: 'polygon',
+          attrs: { coordinates: coordinates.slice(0, 3) },
+          styles: {
+            style: 'stroke',
+            borderColor: '#2962ff',
+            borderSize: 1,
+            borderStyle: 'solid',
+          },
+        },
+      ];
+    },
+  });
+}
+ensureTriangleOverlay();
 
 interface KaiChartProps {
   symbol?: string | null;
@@ -596,8 +635,9 @@ export function KaiChart({
       setActiveIndicators((prev) => prev.filter((i) => i !== name));
       return;
     }
+    const defaultParams = INDICATOR_DEFAULT_PARAMS[name];
     const paneId = chart.createIndicator(
-      name,
+      defaultParams ? { name, calcParams: defaultParams } : name,
       true,
       MAIN_PANE_INDICATORS.has(name) ? { id: CANDLE_PANE_ID } : undefined,
     );

@@ -305,12 +305,22 @@ export default function TradingTerminalPage() {
   }, [markAlertsRead]);
 
   const symbolList = useMemo(() => {
-    const result: Array<{ name: string; display: string; category: string }> = [];
+    // Dedup por display: el bróker expone variantes distintas que colapsan al
+    // mismo nombre visible (p.ej. `USTECm` y `USTEC_x100m` → "USTEC"), lo que
+    // producía filas repetidas en la watchlist. Nos quedamos con UNA por
+    // display, prefiriendo la variante "limpia" (sin el escalado `_x100`).
+    const byDisplay = new Map<string, { name: string; display: string; category: string }>();
+    const isScaledVariant = (name: string) => /_x\d+/i.test(name);
     for (const [category, list] of Object.entries(groupedSymbols ?? {})) {
       for (const sym of list as Array<{ name: string; description?: string | null }>) {
-        result.push({ name: sym.name, display: formatSymbolDisplay(sym.name), category });
+        const display = formatSymbolDisplay(sym.name);
+        const existing = byDisplay.get(display);
+        if (!existing || (isScaledVariant(existing.name) && !isScaledVariant(sym.name))) {
+          byDisplay.set(display, { name: sym.name, display, category });
+        }
       }
     }
+    const result = Array.from(byDisplay.values());
     // Most-liquid instruments first (BTC, ETH, XAU, EUR…) so the watchlist is
     // useful and the default selection has a live price, instead of starting
     // alphabetically on an illiquid token with no price.
