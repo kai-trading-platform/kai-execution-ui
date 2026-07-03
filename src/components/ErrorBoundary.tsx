@@ -10,7 +10,7 @@ interface State {
  * screen with no recovery. This catches it and offers a reload.
  */
 export class ErrorBoundary extends React.Component<
-  { children: React.ReactNode },
+  { children: React.ReactNode; fallback?: React.ReactNode },
   State
 > {
   state: State = { error: null };
@@ -25,6 +25,11 @@ export class ErrorBoundary extends React.Component<
 
   render() {
     if (this.state.error) {
+      // Fallback localizado (p.ej. caer al chart anterior si el nuevo revienta),
+      // en vez de tumbar toda la pantalla.
+      if (this.props.fallback !== undefined) {
+        return this.props.fallback;
+      }
       return (
         <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6 text-center">
           <h1 className="text-lg font-semibold text-foreground">

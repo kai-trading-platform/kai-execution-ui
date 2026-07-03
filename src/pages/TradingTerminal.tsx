@@ -22,10 +22,12 @@ import { useCloseTradingPosition } from "@/hooks/useCloseTradingPosition";
 import { useUpdateTradingPositionStops } from "@/hooks/useUpdateTradingPositionStops";
 import { KaiChart } from "@/components/KaiChart";
 import { KaiChartPro } from "@/components/KaiChartPro";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Migración de chart a @klinecharts/pro (suite ampliada de drawing tools +
-// indicadores) detrás de flag para poder volver al chart actual sin build.
-const USE_CHART_PRO = import.meta.env.VITE_CHART_PRO === "true";
+// indicadores). Encendido por defecto; para volver al chart anterior sin
+// tocar código: VITE_CHART_PRO=false.
+const USE_CHART_PRO = import.meta.env.VITE_CHART_PRO !== "false";
 import type { CopyTradingPosition } from "@/modules/copyTrading/types";
 import { toUiPosition } from "@/lib/positionMapping";
 import { formatSymbolDisplay, compareSymbols, symbolIcon } from "@/lib/symbolDisplay";
@@ -666,12 +668,27 @@ export default function TradingTerminalPage() {
 
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {USE_CHART_PRO ? (
-            <KaiChartPro
-              symbol={selectedSymbol}
-              accountId={dbAccountId}
-              timeframe={timeframe}
-              timezone={settings.timezone}
-            />
+            <ErrorBoundary
+              fallback={
+                <KaiChart
+                  symbol={selectedSymbol}
+                  accountId={dbAccountId}
+                  positions={uiPositions}
+                  timeframe={timeframe}
+                  onTimeframeChange={setTimeframe}
+                  showPositions={settings.showPositions}
+                  showTpSl={settings.showTpSl}
+                  timezone={settings.timezone}
+                />
+              }
+            >
+              <KaiChartPro
+                symbol={selectedSymbol}
+                accountId={dbAccountId}
+                timeframe={timeframe}
+                timezone={settings.timezone}
+              />
+            </ErrorBoundary>
           ) : (
             <KaiChart
               symbol={selectedSymbol}

@@ -97,6 +97,8 @@ export function KaiChartPro({ symbol, accountId, timeframe = '1h', timezone, cla
       periods: CHART_PRO_PERIODS,
       datafeed: datafeedRef.current,
       theme: 'dark',
+      // Pro trae zh-CN por defecto; forzamos inglés (no bundlea es-ES).
+      locale: 'en-US',
       drawingBarVisible: true,
       mainIndicators: ['EMA'],
       timezone: timezone || undefined,
