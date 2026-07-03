@@ -21,6 +21,11 @@ import { usePlaceTradingOrder } from "@/hooks/usePlaceTradingOrder";
 import { useCloseTradingPosition } from "@/hooks/useCloseTradingPosition";
 import { useUpdateTradingPositionStops } from "@/hooks/useUpdateTradingPositionStops";
 import { KaiChart } from "@/components/KaiChart";
+import { KaiChartPro } from "@/components/KaiChartPro";
+
+// Migración de chart a @klinecharts/pro (suite ampliada de drawing tools +
+// indicadores) detrás de flag para poder volver al chart actual sin build.
+const USE_CHART_PRO = import.meta.env.VITE_CHART_PRO === "true";
 import type { CopyTradingPosition } from "@/modules/copyTrading/types";
 import { toUiPosition } from "@/lib/positionMapping";
 import { formatSymbolDisplay, compareSymbols, symbolIcon } from "@/lib/symbolDisplay";
@@ -660,16 +665,25 @@ export default function TradingTerminalPage() {
         )}
 
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-          <KaiChart
-            symbol={selectedSymbol}
-            accountId={dbAccountId}
-            positions={uiPositions}
-            timeframe={timeframe}
-            onTimeframeChange={setTimeframe}
-            showPositions={settings.showPositions}
-            showTpSl={settings.showTpSl}
-            timezone={settings.timezone}
-          />
+          {USE_CHART_PRO ? (
+            <KaiChartPro
+              symbol={selectedSymbol}
+              accountId={dbAccountId}
+              timeframe={timeframe}
+              timezone={settings.timezone}
+            />
+          ) : (
+            <KaiChart
+              symbol={selectedSymbol}
+              accountId={dbAccountId}
+              positions={uiPositions}
+              timeframe={timeframe}
+              onTimeframeChange={setTimeframe}
+              showPositions={settings.showPositions}
+              showTpSl={settings.showTpSl}
+              timezone={settings.timezone}
+            />
+          )}
           <div className={cn("border-t border-white/10 bg-[#0b1019] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
             <div className="flex items-center justify-between border-b border-white/10 px-2 sm:px-3 py-1.5">
               <div className="flex gap-2 sm:gap-4 text-xs overflow-x-auto">
