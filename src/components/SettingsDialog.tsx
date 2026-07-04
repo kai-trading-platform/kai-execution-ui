@@ -74,10 +74,10 @@ export function SettingsDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md border-white/10 bg-[#0b1019] text-white">
+      <DialogContent className="max-w-md border-white/10 bg-[#0d0f16] text-white">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <SettingsIcon className="h-4 w-4 text-[#4c82e3]" /> Configuración
+            <SettingsIcon className="h-4 w-4 text-[#2f6bff]" /> Configuración
           </DialogTitle>
           <DialogDescription className="sr-only">
             Ajusta qué se muestra en el gráfico, los efectos de sonido y las preferencias de trading.
@@ -135,7 +135,7 @@ export function SettingsDialog({
               <select
                 value={settings.timezone}
                 onChange={(e) => setSetting("timezone", e.target.value)}
-                className="w-full rounded-md border border-white/10 bg-[#121826] px-2 py-2 text-[13px] text-white/85 outline-none hover:border-white/20 cursor-pointer"
+                className="w-full rounded-md border border-white/10 bg-[#151824] px-2 py-2 text-[13px] text-white/85 outline-none hover:border-white/20 cursor-pointer"
               >
                 {TIMEZONES.map((tz) => (
                   <option key={tz.value} value={tz.value}>

@@ -208,6 +208,34 @@ export function KaiChartPro({
       // Overlays creados/movidos/borrados desde la DrawingBar nativa → persistir.
       onOverlayEvent: (evType, overlay) => persist(evType, overlay),
     });
+    // Estilo del chart interno de klinecharts (velas/grid/ejes/crosshair) para
+    // fundirlo con la paleta near-black. Verde=alza, rojo=baja (dirección). El
+    // optional chaining evita lanzar si getChart() aún no está listo.
+    chartRef.current.getChart()?.setStyles({
+      grid: { horizontal: { color: 'rgba(255,255,255,0.04)' }, vertical: { color: 'rgba(255,255,255,0.04)' } },
+      candle: {
+        bar: {
+          upColor: '#2ed68d', downColor: '#ef5350', noChangeColor: '#888888',
+          upBorderColor: '#2ed68d', downBorderColor: '#ef5350',
+          upWickColor: 'rgba(46,214,141,0.75)', downWickColor: 'rgba(239,83,80,0.75)',
+        },
+        priceMark: {
+          high: { color: 'rgba(226,228,233,0.7)' }, low: { color: 'rgba(226,228,233,0.7)' },
+          last: {
+            upColor: '#2ed68d', downColor: '#ef5350', noChangeColor: '#888888',
+            text: { color: '#ffffff' },
+          },
+        },
+        tooltip: { text: { color: 'rgba(226,228,233,0.85)' } },
+      },
+      xAxis: { axisLine: { color: 'rgba(255,255,255,0.06)' }, tickText: { color: 'rgba(226,228,233,0.55)' }, tickLine: { color: 'rgba(255,255,255,0.06)' } },
+      yAxis: { axisLine: { color: 'rgba(255,255,255,0.06)' }, tickText: { color: 'rgba(226,228,233,0.55)' }, tickLine: { color: 'rgba(255,255,255,0.06)' } },
+      crosshair: {
+        horizontal: { line: { color: 'rgba(148,163,184,0.4)' }, text: { backgroundColor: '#0d0f16' } },
+        vertical: { line: { color: 'rgba(148,163,184,0.4)' }, text: { backgroundColor: '#0d0f16' } },
+      },
+      indicator: { tooltip: { text: { color: 'rgba(226,228,233,0.7)' } } },
+    });
     const container = containerRef.current;
     return () => {
       // 0.1.1 no expone dispose; al desmontar limpiamos el contenedor.

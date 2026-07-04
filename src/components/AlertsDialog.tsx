@@ -56,10 +56,10 @@ export function AlertsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md border-white/10 bg-[#0b1019] text-white">
+      <DialogContent className="max-w-md border-white/10 bg-[#0d0f16] text-white">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Bell className="h-4 w-4 text-[#4c82e3]" /> Alertas de precio
+            <Bell className="h-4 w-4 text-[#2f6bff]" /> Alertas de precio
           </DialogTitle>
           <DialogDescription className="sr-only">
             Crea y gestiona alertas que te avisan cuando un símbolo alcanza un precio.
@@ -67,13 +67,13 @@ export function AlertsDialog({
         </DialogHeader>
 
         {/* Create */}
-        <div className="rounded-lg border border-white/10 bg-[#121826] p-3 space-y-2">
+        <div className="rounded-lg border border-white/10 bg-[#151824] p-3 space-y-2">
           <div className="text-[10px] uppercase tracking-wider text-white/45">Nueva alerta</div>
           <div className="flex gap-2">
             <select
               value={symbol}
               onChange={(e) => setSymbol(e.target.value)}
-              className="h-9 flex-1 rounded-md border border-white/10 bg-[#0b1019] px-2 text-xs text-white outline-none focus:border-[#4c82e3]"
+              className="h-9 flex-1 rounded-md border border-white/10 bg-[#0d0f16] px-2 text-xs text-white outline-none focus:border-[#2f6bff]"
             >
               {sortedSymbols.map((s) => (
                 <option key={s.name} value={s.name}>{s.display}</option>
@@ -84,7 +84,7 @@ export function AlertsDialog({
               onChange={(e) => setPrice(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && submit()}
               placeholder="Precio"
-              className="h-9 w-28 bg-[#0b1019] border-white/10 text-white tabular-nums"
+              className="h-9 w-28 bg-[#0d0f16] border-white/10 text-white tabular-nums"
             />
           </div>
           <div className="flex items-center justify-between">
@@ -99,7 +99,7 @@ export function AlertsDialog({
                 </>
               ) : "Sin precio en vivo para este símbolo"}
             </span>
-            <Button size="sm" className="h-7 bg-[#4c82e3] hover:bg-[#3a64b8] text-white" onClick={submit}>
+            <Button size="sm" className="h-7 bg-[#2f6bff] hover:bg-[#3a64b8] text-white" onClick={submit}>
               Crear
             </Button>
           </div>
@@ -110,7 +110,7 @@ export function AlertsDialog({
           <div className="text-[10px] uppercase tracking-wider text-white/45">Activas ({alerts.length})</div>
           {alerts.length === 0 && <p className="text-xs text-white/40 py-1">No tienes alertas activas.</p>}
           {alerts.map((a) => (
-            <div key={a.id} className="flex items-center justify-between rounded-md border border-white/10 bg-[#121826] px-3 py-2">
+            <div key={a.id} className="flex items-center justify-between rounded-md border border-white/10 bg-[#151824] px-3 py-2">
               <div className="flex items-center gap-2 text-xs">
                 {a.direction === "up" ? <ArrowUp className="h-3.5 w-3.5 text-[#2ed68d]" /> : <ArrowDown className="h-3.5 w-3.5 text-[#ef5350]" />}
                 <span className="font-semibold">{formatSymbolDisplay(a.symbol)}</span>
@@ -133,9 +133,9 @@ export function AlertsDialog({
             </div>
             <div className="max-h-40 overflow-y-auto space-y-1">
               {triggered.map((t) => (
-                <div key={t.id} className="flex items-center justify-between rounded-md bg-[#4c82e3]/10 px-3 py-1.5 text-xs">
+                <div key={t.id} className="flex items-center justify-between rounded-md bg-[#2f6bff]/10 px-3 py-1.5 text-xs">
                   <span className="flex items-center gap-2">
-                    <Bell className="h-3 w-3 text-[#4c82e3]" />
+                    <Bell className="h-3 w-3 text-[#2f6bff]" />
                     <span className="font-semibold">{formatSymbolDisplay(t.symbol)}</span>
                     <span className="text-white/50">alcanzó</span>
                     <span className="tabular-nums">{t.target.toFixed(dec(t.target))}</span>

@@ -19,6 +19,9 @@ import { useAccountSymbols } from "@/hooks/useAccountSymbols";
 import { useMarketSocket } from "@/contexts/MarketSocketContext";
 import { usePlaceTradingOrder } from "@/hooks/usePlaceTradingOrder";
 import { useCloseTradingPosition } from "@/hooks/useCloseTradingPosition";
+import { useFlattenAllPositions } from "@/hooks/useFlattenAllPositions";
+import { useCancelAllOrders } from "@/hooks/useCancelAllOrders";
+import { useReversePosition } from "@/hooks/useReversePosition";
 import { useUpdateTradingPositionStops } from "@/hooks/useUpdateTradingPositionStops";
 import { KaiChart } from "@/components/KaiChart";
 import { KaiChartPro } from "@/components/KaiChartPro";
@@ -59,7 +62,7 @@ const WATCHLIST_LIVE_CAP = 20;
 // memos downstream — see the "Maximum update depth exceeded" fix in KaiChart).
 const EMPTY_LIST: never[] = [];
 
-type BottomTab = "POSICIONES" | "ORDENES" | "HISTORIAL";
+type BottomTab = "CUENTAS" | "POSICIONES" | "ORDENES" | "HISTORIAL";
 type OrderType = "MERCADO" | "LIMITE" | "STOP";
 type OrderMode = "regular" | "oneClick" | "risk";
 type Panel = "watchlist" | "trade" | "bottom";
@@ -196,6 +199,9 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const [alertsOpen, setAlertsOpen] = useState<boolean>(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [mobilePanel, setMobilePanel] = useState<Panel | null>(null);
+  // A4 — visual-only "Trade Arrows" toggle for the chart overlay (no arrows
+  // system exists yet; a local boolean mirrors the AlphaTrader control).
+  const [tradeArrows, setTradeArrows] = useState<boolean>(true);
   const { settings, setSetting } = useTerminalSettings();
   const [timeframe, setTimeframeState] = useState<string>(() => {
     try {
@@ -257,6 +263,9 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const placeOrder = usePlaceTradingOrder();
   const closePosition = useCloseTradingPosition();
   const updateStops = useUpdateTradingPositionStops();
+  const flattenAll = useFlattenAllPositions();
+  const cancelAll = useCancelAllOrders();
+  const reversePos = useReversePosition();
 
   useEffect(() => {
     document.title = `Kai Trading Terminal${accountId ? ` - ${accountId}` : ""}`;
@@ -655,6 +664,116 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     [uiPositions],
   );
 
+  // Open position for the ACTIVE symbol (drives the futures ticket's "Active
+  // Positions" line + CLOSE POSITION button). Matched by broker symbol and, as a
+  // fallback, by display name so scaled/variant symbols still resolve.
+  const activePosition = useMemo<CopyTradingPosition | null>(() => {
+    if (!selectedSymbol) return null;
+    const disp = formatSymbolDisplay(selectedSymbol);
+    return (
+      uiPositions.find((p) => p.symbol === selectedSymbol || formatSymbolDisplay(p.symbol) === disp) ?? null
+    );
+  }, [uiPositions, selectedSymbol]);
+
+  // Fase B — bulk/flip futures actions. All server-gated by
+  // RITHMIC_TERMINAL_ORDERS_ENABLED + the account capability flag (the buttons
+  // stay disabled while ordersEnabled is false), and each requires an explicit
+  // REAL confirmation before it executes (dryRun:false + confirmationText).
+  const onFlattenAll = useCallback(async () => {
+    if (!dbAccountId) return;
+    const ok = await confirm({
+      title: "Flatten all",
+      description:
+        "Se cerrarán TODAS las posiciones abiertas de esta cuenta a precio de mercado y se cancelarán sus órdenes de entrada. Operación REAL.",
+      confirmText: "Flatten all",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await flattenAll.mutateAsync({
+        tradingAccountId: dbAccountId,
+        dryRun: false,
+        confirmationText: REAL_CONFIRMATION_TEXT,
+      });
+      toast.success("Todas las posiciones cerradas");
+    } catch (e) {
+      toast.error(errorMessage(e, "No se pudo hacer flatten all"));
+    }
+  }, [confirm, dbAccountId, flattenAll]);
+
+  const onCancelAll = useCallback(async () => {
+    if (!dbAccountId) return;
+    const ok = await confirm({
+      title: "Cancelar órdenes",
+      description:
+        "Se cancelarán TODAS las órdenes de trabajo (pendientes) de esta cuenta. No cierra posiciones abiertas. Operación REAL.",
+      confirmText: "Cancelar órdenes",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await cancelAll.mutateAsync({
+        tradingAccountId: dbAccountId,
+        dryRun: false,
+        confirmationText: REAL_CONFIRMATION_TEXT,
+      });
+      toast.success("Órdenes canceladas");
+    } catch (e) {
+      toast.error(errorMessage(e, "No se pudieron cancelar las órdenes"));
+    }
+  }, [confirm, dbAccountId, cancelAll]);
+
+  const onReverse = useCallback(async () => {
+    if (!dbAccountId || !activePosition) return;
+    // Reverse requires a protective SL: the Rithmic per-trade risk gate is
+    // fail-closed and refuses a flip that can't be bounded. Ask the user to set
+    // one (via the OCO/Bracket toggle) instead of silently sending a naked flip.
+    const sl = stopLossEnabled ? parseFloat(stopLossPrice) : NaN;
+    if (!Number.isFinite(sl) || sl <= 0) {
+      toast.error("Reverse necesita un Stop Loss", {
+        description:
+          "Activá OCO/Bracket y definí el SL de la posición revertida antes de revertir.",
+      });
+      return;
+    }
+    const tp = takeProfitEnabled ? parseFloat(takeProfitPrice) : NaN;
+    // New position enters opposite: LONG→SHORT fills ~bid, SHORT→LONG fills ~ask.
+    const newEntry = activePosition.side === "LONG" ? bidPrice : askPrice;
+    const ok = await confirm({
+      title: `Revertir ${formatSymbolDisplay(activePosition.symbol)}`,
+      description:
+        "Se cerrará la posición actual y se abrirá una OPUESTA del mismo tamaño (sujeto al cap de contratos y al riesgo por trade). Operación REAL.",
+      confirmText: "Revertir posición",
+      destructive: true,
+    });
+    if (!ok) return;
+    try {
+      await reversePos.mutateAsync({
+        tradingAccountId: dbAccountId,
+        ticket: String(activePosition.id),
+        stopLoss: sl,
+        takeProfit: Number.isFinite(tp) && tp > 0 ? tp : null,
+        entry: newEntry > 0 ? newEntry : null,
+        dryRun: false,
+        confirmationText: REAL_CONFIRMATION_TEXT,
+      });
+      toast.success("Posición revertida");
+    } catch (e) {
+      toast.error(errorMessage(e, "No se pudo revertir la posición"));
+    }
+  }, [
+    confirm,
+    dbAccountId,
+    activePosition,
+    stopLossEnabled,
+    stopLossPrice,
+    takeProfitEnabled,
+    takeProfitPrice,
+    bidPrice,
+    askPrice,
+    reversePos,
+  ]);
+
   // Beep when a position disappears (closed by TP/SL/SO or manually). Reset the
   // baseline on account switch so changing accounts never sounds a false close.
   const prevPosRef = useRef<{ account: string | null; ids: Set<string> }>({ account: null, ids: new Set() });
@@ -673,7 +792,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   }, [uiPositions, dbAccountId, positionsLoading, settings.soundClose, playBeep]);
 
   return (
-    <div className="flex flex-col h-[100dvh] w-screen bg-[#0a0e16] text-white overflow-hidden">
+    <div className="flex flex-col h-[100dvh] w-screen bg-[#0a0c12] text-white overflow-hidden">
       <TopHeader
         accountName={resolvedAccount?.name ?? (accountsLoading ? "Cargando..." : "Sin cuenta")}
         accountNumber={accountId ?? resolvedAccount?.providerAccountId ?? "—"}
@@ -692,6 +811,10 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         onToggleMobilePanel={(p) => setMobilePanel((cur) => (cur === p ? null : p))}
         activeMobilePanel={mobilePanel}
         equity={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
+        currentBalance={(resolvedAccount as { balance?: number | null } | null)?.balance ?? null}
+        unrealizedPnl={uiPositions.length > 0 ? totalPnl : null}
+        netDailyPnl={null}
+        sodBalance={null}
         openSymbols={openSymbols}
         selectedSymbol={selectedSymbol}
         onSelectTab={setSelectedSymbol}
@@ -728,7 +851,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
       <div className="flex flex-1 overflow-hidden relative">
         <aside
           className={cn(
-            "shrink-0 border-r border-white/10 bg-[#0b1019] flex flex-col overflow-hidden transition-all duration-200",
+            "shrink-0 border-r border-white/10 bg-[#0d0f16] flex flex-col overflow-hidden transition-all duration-200",
             "hidden md:flex",
             "w-64",
           )}
@@ -746,7 +869,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         </aside>
 
         {mobilePanel === "watchlist" && (
-          <div className="md:hidden absolute inset-0 z-40 bg-[#0b1019] flex flex-col">
+          <div className="md:hidden absolute inset-0 z-40 bg-[#0d0f16] flex flex-col">
             <div className="flex items-center justify-between p-3 border-b border-white/10">
               <span className="text-sm font-semibold">Watchlist</span>
               <Button variant="ghost" size="icon" onClick={() => setMobilePanel(null)} className="h-8 w-8">
@@ -767,49 +890,89 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         )}
 
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-          {USE_CHART_PRO ? (
-            <ErrorBoundary
-              fallback={
-                <KaiChart
+          <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+            {USE_CHART_PRO ? (
+              <ErrorBoundary
+                fallback={
+                  <KaiChart
+                    symbol={selectedSymbol}
+                    accountId={dbAccountId}
+                    positions={uiPositions}
+                    timeframe={timeframe}
+                    onTimeframeChange={setTimeframe}
+                    showPositions={settings.showPositions}
+                    showTpSl={settings.showTpSl}
+                    timezone={settings.timezone}
+                  />
+                }
+              >
+                <KaiChartPro
                   symbol={selectedSymbol}
                   accountId={dbAccountId}
                   positions={uiPositions}
                   timeframe={timeframe}
-                  onTimeframeChange={setTimeframe}
+                  timezone={settings.timezone}
                   showPositions={settings.showPositions}
                   showTpSl={settings.showTpSl}
-                  timezone={settings.timezone}
+                  onSymbolChange={openSymbol}
+                  onPeriodChange={setTimeframe}
                 />
-              }
-            >
-              <KaiChartPro
+              </ErrorBoundary>
+            ) : (
+              <KaiChart
                 symbol={selectedSymbol}
                 accountId={dbAccountId}
                 positions={uiPositions}
                 timeframe={timeframe}
-                timezone={settings.timezone}
+                onTimeframeChange={setTimeframe}
                 showPositions={settings.showPositions}
                 showTpSl={settings.showTpSl}
-                onSymbolChange={openSymbol}
-                onPeriodChange={setTimeframe}
+                timezone={settings.timezone}
               />
-            </ErrorBoundary>
-          ) : (
-            <KaiChart
-              symbol={selectedSymbol}
-              accountId={dbAccountId}
-              positions={uiPositions}
-              timeframe={timeframe}
-              onTimeframeChange={setTimeframe}
-              showPositions={settings.showPositions}
-              showTpSl={settings.showTpSl}
-              timezone={settings.timezone}
-            />
-          )}
-          <div className={cn("border-t border-white/10 bg-[#0b1019] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
+            )}
+
+            {/* A4 — chart overlays. Container ignores pointer events; only the
+                interactive controls opt back in so the chart stays draggable. */}
+            <div className="pointer-events-none absolute inset-0 z-20">
+              {selectedSymbol && (
+                <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full border border-white/10 bg-[#0d0f16]/90 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider backdrop-blur">
+                  <span className="text-[#2f6bff]">Quick Trade</span>
+                  <span className="text-white/50">{formatSymbolDisplay(selectedSymbol)}</span>
+                </div>
+              )}
+              <button
+                onClick={() => setTradeArrows((v) => !v)}
+                className="pointer-events-auto absolute top-2 left-2 rounded-md border border-white/10 bg-[#0d0f16]/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/70 hover:bg-white/10 backdrop-blur transition-colors"
+                title="Mostrar flechas de operaciones en el gráfico"
+              >
+                Trade Arrows: <span className={tradeArrows ? "text-[#2ed68d]" : "text-white/40"}>{tradeArrows ? "ON" : "OFF"}</span>
+              </button>
+              {strategy.ordersEnabled && bidPrice > 0 && (
+                <div className="pointer-events-auto absolute bottom-3 right-3 flex items-center gap-1.5 rounded-lg border border-white/10 bg-[#0d0f16]/90 p-1.5 backdrop-blur">
+                  <button
+                    onClick={() => handlePlaceOrder("sell")}
+                    disabled={placeOrder.isPending}
+                    className="flex flex-col items-center rounded-md bg-[#e0413d] hover:bg-[#ef5350] px-3 py-1.5 text-white disabled:opacity-40 transition-colors"
+                  >
+                    <span className="text-[10px] font-bold leading-none">SELL</span>
+                    <span className="text-[11px] tabular-nums leading-tight mt-0.5">{bidPrice.toFixed(bidPrice > 0 && bidPrice < 20 ? 5 : 2)}</span>
+                  </button>
+                  <button
+                    onClick={() => handlePlaceOrder("buy")}
+                    disabled={placeOrder.isPending}
+                    className="flex flex-col items-center rounded-md bg-[#1aa86a] hover:bg-[#1fbd78] px-3 py-1.5 text-white disabled:opacity-40 transition-colors"
+                  >
+                    <span className="text-[10px] font-bold leading-none">BUY</span>
+                    <span className="text-[11px] tabular-nums leading-tight mt-0.5">{askPrice.toFixed(askPrice > 0 && askPrice < 20 ? 5 : 2)}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          <div className={cn("border-t border-white/10 bg-[#0d0f16] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
             <div className="flex items-center justify-between border-b border-white/10 px-2 sm:px-3 py-1.5">
               <div className="flex gap-2 sm:gap-4 text-xs overflow-x-auto">
-                {(["POSICIONES", "ORDENES", "HISTORIAL"] as const).map((t) => (
+                {(["CUENTAS", "POSICIONES", "ORDENES", "HISTORIAL"] as const).map((t) => (
                   <button
                     key={t}
                     onClick={() => {
@@ -818,14 +981,16 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                     }}
                     className={cn(
                       "font-semibold tracking-wider pb-1 transition-colors whitespace-nowrap",
-                      bottomTab === t && bottomOpen ? "text-white border-b-2 border-[#4c82e3]" : "text-white/50 hover:text-white/80",
+                      bottomTab === t && bottomOpen ? "text-white border-b-2 border-[#2f6bff]" : "text-white/50 hover:text-white/80",
                     )}
                   >
-                    {t === "POSICIONES"
-                      ? `POSICIONES (${positions.length})`
-                      : t === "ORDENES"
-                        ? "ÓRDENES (0)"
-                        : "HISTORIAL"}
+                    {t === "CUENTAS"
+                      ? `CUENTAS (${routeAccounts.length})`
+                      : t === "POSICIONES"
+                        ? `POSICIONES (${positions.length})`
+                        : t === "ORDENES"
+                          ? "ÓRDENES (0)"
+                          : "HISTORIAL"}
                   </button>
                 ))}
               </div>
@@ -855,6 +1020,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                 positions={uiPositions}
                 loading={positionsLoading}
                 activeTab={bottomTab}
+                accounts={routeAccounts as Array<{ id: string; name: string; providerAccountId?: string | null; status?: string; accountType?: string | null; balance?: number | null; equity?: number | null }>}
                 totalPnl={totalPnl}
                 balance={(resolvedAccount as { balance?: number | null } | null)?.balance ?? null}
                 equity={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
@@ -868,7 +1034,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
 
         <aside
           className={cn(
-            "shrink-0 border-l border-white/10 bg-[#0b1019] flex flex-col overflow-hidden transition-all duration-200",
+            "shrink-0 border-l border-white/10 bg-[#0d0f16] flex flex-col overflow-hidden transition-all duration-200",
             "hidden lg:flex",
             "w-80",
           )}
@@ -903,12 +1069,17 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
             strategy={strategy}
             tickSpec={tickSpec}
             maxContracts={maxContracts}
+            activePosition={activePosition}
+            onClosePosition={activePosition ? () => handleClosePosition(activePosition) : undefined}
+            onReverse={onReverse}
+            onFlattenAll={onFlattenAll}
+            onCancelAll={onCancelAll}
           />
         </aside>
 
         {mobilePanel === "trade" && (
-          <div className="lg:hidden absolute inset-0 z-40 bg-[#0b1019] flex flex-col overflow-y-auto">
-            <div className="flex items-center justify-between p-3 border-b border-white/10 sticky top-0 bg-[#0b1019] z-10">
+          <div className="lg:hidden absolute inset-0 z-40 bg-[#0d0f16] flex flex-col overflow-y-auto">
+            <div className="flex items-center justify-between p-3 border-b border-white/10 sticky top-0 bg-[#0d0f16] z-10">
               <span className="text-sm font-semibold">Operar</span>
               <Button variant="ghost" size="icon" onClick={() => setMobilePanel(null)} className="h-8 w-8">
                 <X className="h-4 w-4" />
@@ -944,12 +1115,17 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
               strategy={strategy}
               tickSpec={tickSpec}
               maxContracts={maxContracts}
+              activePosition={activePosition}
+              onClosePosition={activePosition ? () => handleClosePosition(activePosition) : undefined}
+              onReverse={onReverse}
+              onFlattenAll={onFlattenAll}
+              onCancelAll={onCancelAll}
             />
           </div>
         )}
       </div>
 
-      <div className="md:hidden flex items-center justify-around border-t border-white/10 bg-[#0b1019] py-2 shrink-0">
+      <div className="md:hidden flex items-center justify-around border-t border-white/10 bg-[#0d0f16] py-2 shrink-0">
         <Button
           variant="ghost"
           size="sm"
@@ -999,6 +1175,10 @@ function TopHeader({
   onToggleMobilePanel,
   activeMobilePanel,
   equity,
+  currentBalance,
+  unrealizedPnl,
+  netDailyPnl,
+  sodBalance,
   openSymbols,
   selectedSymbol,
   onSelectTab,
@@ -1020,6 +1200,10 @@ function TopHeader({
   onToggleMobilePanel: (p: Panel) => void;
   activeMobilePanel: Panel | null;
   equity: number | null;
+  currentBalance: number | null;
+  unrealizedPnl: number | null;
+  netDailyPnl: number | null;
+  sodBalance: number | null;
   openSymbols: string[];
   selectedSymbol: string;
   onSelectTab: (sym: string) => void;
@@ -1043,7 +1227,7 @@ function TopHeader({
   }, []);
 
   return (
-    <header className="flex items-center justify-between border-b border-white/10 bg-[#0b1019] px-3 sm:px-4 py-2 text-sm shrink-0">
+    <header className="flex items-center justify-between border-b border-white/10 bg-[#0d0f16] px-3 sm:px-4 py-2 text-sm shrink-0">
       <div className="flex items-center gap-3 sm:gap-6 min-w-0">
         <div className="flex items-center gap-2 shrink-0">
           <img src="/apple-touch-icon.png" alt="Kai" className="h-7 w-7 rounded-lg" />
@@ -1051,7 +1235,7 @@ function TopHeader({
         <div className="relative" ref={ref}>
           <button
             onClick={() => setOpen((v) => !v)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/10 bg-[#121826] hover:border-white/20 cursor-pointer min-w-0 transition-colors"
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/10 bg-[#151824] hover:border-white/20 cursor-pointer min-w-0 transition-colors"
           >
             <div className="text-left min-w-0">
               <div className="text-[10px] text-white/45 truncate max-w-[120px] sm:max-w-none">
@@ -1062,7 +1246,7 @@ function TopHeader({
             <ChevronDown className="h-3.5 w-3.5 text-white/40 shrink-0" />
           </button>
           {open && accounts.length > 0 && (
-            <div className="absolute top-full left-0 mt-1 w-64 max-w-[calc(100vw-2rem)] bg-[#0b1019] border border-white/10 rounded-md shadow-xl z-50">
+            <div className="absolute top-full left-0 mt-1 w-64 max-w-[calc(100vw-2rem)] bg-[#0d0f16] border border-white/10 rounded-md shadow-xl z-50">
               <div className="max-h-80 overflow-y-auto">
                 {accounts.map((a) => (
                   <button
@@ -1099,9 +1283,33 @@ function TopHeader({
       />
 
       <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-        <div className="hidden md:block text-right mr-1">
-          <div className="text-white/45 uppercase tracking-wider text-[9px] leading-tight">Equity</div>
-          <div className="font-semibold text-emerald-400 tabular-nums text-[13px] leading-tight">{fmtUsd(equity)}</div>
+        <div className="hidden md:flex items-stretch gap-4 lg:gap-5 mr-2 pr-3 border-r border-white/8">
+          {(() => {
+            const StatBlock = ({ label, value, tone = "neutral" }: { label: string; value: number | null; tone?: "neutral" | "pnl" }) => {
+              const missing = value == null || !Number.isFinite(value);
+              const color =
+                tone === "pnl" && !missing
+                  ? (value as number) >= 0
+                    ? "text-[#2ed68d]"
+                    : "text-[#ef5350]"
+                  : "text-white/90";
+              return (
+                <div className="flex flex-col justify-center min-w-0">
+                  <div className="text-[10px] uppercase tracking-wide text-white/45 leading-tight whitespace-nowrap">{label}</div>
+                  <div className={cn("font-semibold tabular-nums text-[13px] leading-tight whitespace-nowrap", color)}>{fmtUsd(value)}</div>
+                </div>
+              );
+            };
+            return (
+              <>
+                <StatBlock label="Current Balance" value={currentBalance} />
+                <StatBlock label="Equity" value={equity} />
+                <StatBlock label="Net Daily PnL" value={netDailyPnl} tone="pnl" />
+                <StatBlock label="Unrealized PnL" value={unrealizedPnl} tone="pnl" />
+                <StatBlock label="SOD Balance" value={sodBalance} />
+              </>
+            );
+          })()}
         </div>
         <button
           onClick={onSettingsClick}
@@ -1209,7 +1417,7 @@ function MarketTabs({
             className={cn(
               "group flex items-center gap-2 pl-2 pr-1.5 py-1 rounded-lg border cursor-pointer shrink-0 transition-colors",
               active
-                ? "border-[#4c82e3]/50 bg-[#4c82e3]/10"
+                ? "border-[#2f6bff]/50 bg-[#2f6bff]/10"
                 : "border-transparent hover:bg-white/5",
             )}
           >
@@ -1249,9 +1457,9 @@ function MarketTabs({
           <Plus className="h-4 w-4" />
         </button>
         {pickerOpen && (
-          <div className="absolute top-full left-0 mt-1 w-72 max-w-[calc(100vw-2rem)] bg-[#0b1019] border border-white/10 rounded-lg shadow-xl z-50 overflow-hidden">
+          <div className="absolute top-full left-0 mt-1 w-72 max-w-[calc(100vw-2rem)] bg-[#0d0f16] border border-white/10 rounded-lg shadow-xl z-50 overflow-hidden">
             <div className="p-2 border-b border-white/10">
-              <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-[#121826]">
+              <div className="flex items-center gap-2 px-2 py-1.5 rounded-md bg-[#151824]">
                 <Search className="h-3.5 w-3.5 text-white/40 shrink-0" />
                 <input
                   autoFocus
@@ -1286,7 +1494,7 @@ function MarketTabs({
                       {ic.glyph}
                     </span>
                     <span className="text-[13px] font-medium flex-1 truncate">{s.display}</span>
-                    {isOpen && <span className="text-[10px] text-[#4c82e3]">Abierto</span>}
+                    {isOpen && <span className="text-[10px] text-[#2f6bff]">Abierto</span>}
                   </button>
                 );
               })}
@@ -1352,7 +1560,7 @@ function Watchlist({
             onClick={() => onCategoryChange(c)}
             className={cn(
               "px-2 py-1 rounded font-medium transition-colors whitespace-nowrap",
-              categoryFilter === c ? "text-white border-b border-[#4c82e3]" : "text-white/50 hover:text-white/80",
+              categoryFilter === c ? "text-white border-b border-[#2f6bff]" : "text-white/50 hover:text-white/80",
             )}
           >
             {c}
@@ -1388,7 +1596,7 @@ function Watchlist({
               onClick={() => onSelect(item.name)}
               className={cn(
                 "grid grid-cols-[22px_1fr_auto] items-center gap-2.5 px-4 py-2 text-xs cursor-pointer transition-colors",
-                isSel ? "bg-[#4c82e3]/[0.08] shadow-[inset_2px_0_0_#4c82e3]" : "hover:bg-[#121826]",
+                isSel ? "bg-[#2f6bff]/[0.08] shadow-[inset_2px_0_0_#2f6bff]" : "hover:bg-[#151824]",
               )}
             >
               <div
@@ -1441,7 +1649,7 @@ function CloseAllDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md border-white/10 bg-[#0b1019] text-white">
+      <DialogContent className="max-w-md border-white/10 bg-[#0d0f16] text-white">
         <DialogHeader>
           <DialogTitle>¿Cerrar posiciones a precio de mercado?</DialogTitle>
           <DialogDescription className="sr-only">
@@ -1460,13 +1668,13 @@ function CloseAllDialog({
                 onClick={() => setChoice(o.id)}
                 className={cn(
                   "flex w-full items-center justify-between rounded-lg border px-3 py-2.5 text-left transition-colors",
-                  active ? "border-[#4c82e3] bg-[#4c82e3]/10" : "border-white/10 hover:bg-white/5",
+                  active ? "border-[#2f6bff] bg-[#2f6bff]/10" : "border-white/10 hover:bg-white/5",
                   disabled && "opacity-40 cursor-not-allowed",
                 )}
               >
                 <span className="flex items-center gap-2 text-[13px]">
-                  <span className={cn("flex h-3.5 w-3.5 items-center justify-center rounded-full border", active ? "border-[#4c82e3]" : "border-white/30")}>
-                    {active && <span className="h-1.5 w-1.5 rounded-full bg-[#4c82e3]" />}
+                  <span className={cn("flex h-3.5 w-3.5 items-center justify-center rounded-full border", active ? "border-[#2f6bff]" : "border-white/30")}>
+                    {active && <span className="h-1.5 w-1.5 rounded-full bg-[#2f6bff]" />}
                   </span>
                   {o.label}
                   <span className="text-white/40">({o.list.length})</span>
@@ -1497,6 +1705,7 @@ function BottomPanel({
   positions,
   loading,
   activeTab,
+  accounts,
   totalPnl,
   balance,
   equity,
@@ -1507,6 +1716,7 @@ function BottomPanel({
   positions: CopyTradingPosition[];
   loading: boolean;
   activeTab: BottomTab;
+  accounts: Array<{ id: string; name: string; providerAccountId?: string | null; status?: string; accountType?: string | null; balance?: number | null; equity?: number | null }>;
   totalPnl: number;
   balance: number | null;
   equity: number | null;
@@ -1541,8 +1751,57 @@ function BottomPanel({
   const fmtOpened = (iso: string | null) =>
     iso ? new Date(iso).toLocaleString("es", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 
+  const fmtAcctUsd = (v: number | null | undefined) =>
+    v == null || !Number.isFinite(v) ? "—" : v.toLocaleString("en-US", { style: "currency", currency: "USD" });
+  const ACCT_COLS = "grid-cols-[minmax(140px,1.4fr)_90px_minmax(90px,1fr)_120px_120px]";
+
   return (
     <>
+      {activeTab === "CUENTAS" && (
+        <div className="flex-1 overflow-y-auto">
+          {accounts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-6 text-white/50 text-xs">
+              <p>Sin cuentas</p>
+            </div>
+          ) : (
+            <>
+              <div className={cn("hidden sm:grid gap-2 px-3 py-1.5 text-[10px] uppercase tracking-wider text-white/40 border-b border-white/5", ACCT_COLS)}>
+                <div>Account Name</div>
+                <div>Status</div>
+                <div>Account Type</div>
+                <div className="text-right">Balance</div>
+                <div className="text-right">Current Balance</div>
+              </div>
+              {accounts.map((a) => {
+                const connected = a.status === "connected";
+                return (
+                  <div key={a.id} className="px-3 py-2 text-xs hover:bg-white/5 border-b border-white/5">
+                    <div className={cn("hidden sm:grid gap-2 items-center", ACCT_COLS)}>
+                      <div className="font-semibold text-white truncate">{a.name}</div>
+                      <div className="flex items-center gap-1.5">
+                        <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", connected ? "bg-[#2ed68d]" : "bg-white/30")} />
+                        <span className="text-white/70">{connected ? "Active" : a.status ?? "—"}</span>
+                      </div>
+                      <div className="text-white/70 truncate">{a.accountType ?? "—"}</div>
+                      <div className="text-right text-white/80 tabular-nums">{fmtAcctUsd(a.balance)}</div>
+                      <div className="text-right text-white/80 tabular-nums">{fmtAcctUsd(a.equity ?? a.balance)}</div>
+                    </div>
+                    {/* Mobile */}
+                    <div className="sm:hidden flex items-center justify-between">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-white truncate">{a.name}</div>
+                        <div className="text-[10px] text-white/50">{a.accountType ?? "—"} · {connected ? "Active" : a.status ?? "—"}</div>
+                      </div>
+                      <div className="text-right tabular-nums text-white/80">{fmtAcctUsd(a.equity ?? a.balance)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      )}
+
       {activeTab === "POSICIONES" && (
         <div className="flex-1 overflow-y-auto">
           {loading && (
@@ -1588,7 +1847,7 @@ function BottomPanel({
                     </div>
                     <div className="text-white/60 text-[10px]">#{p.id} · {p.qty} @ {px(p.avgPrice)}</div>
                     <div className="flex justify-end gap-2">
-                      <button onClick={() => openEdit(p)} className="h-6 text-[10px] text-[#4c82e3] hover:underline px-1">SL/TP</button>
+                      <button onClick={() => openEdit(p)} className="h-6 text-[10px] text-[#2f6bff] hover:underline px-1">SL/TP</button>
                       <button onClick={() => onClose(p)} className="h-6 text-[10px] text-[#ef5350] hover:underline px-1">CERRAR</button>
                     </div>
                   </div>
@@ -1654,7 +1913,7 @@ function BottomPanel({
       )}
 
       <Dialog open={Boolean(edit)} onOpenChange={(o) => !o && setEdit(null)}>
-        <DialogContent className="max-w-sm border-white/10 bg-[#0b1019] text-white">
+        <DialogContent className="max-w-sm border-white/10 bg-[#0d0f16] text-white">
           <DialogHeader>
             <DialogTitle>Modificar SL / TP · #{edit?.id}</DialogTitle>
             <DialogDescription className="sr-only">
@@ -1668,15 +1927,15 @@ function BottomPanel({
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[#2ed68d] mb-1">Take Profit</div>
-                <Input value={editTp} onChange={(e) => setEditTp(e.target.value)} placeholder="0 = sin TP" className="h-9 bg-[#121826] border-white/10 text-white tabular-nums" />
+                <Input value={editTp} onChange={(e) => setEditTp(e.target.value)} placeholder="0 = sin TP" className="h-9 bg-[#151824] border-white/10 text-white tabular-nums" />
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[#ef5350] mb-1">Stop Loss</div>
-                <Input value={editSl} onChange={(e) => setEditSl(e.target.value)} placeholder="0 = sin SL" className="h-9 bg-[#121826] border-white/10 text-white tabular-nums" />
+                <Input value={editSl} onChange={(e) => setEditSl(e.target.value)} placeholder="0 = sin SL" className="h-9 bg-[#151824] border-white/10 text-white tabular-nums" />
               </div>
               <div className="flex gap-2 pt-1">
                 <Button variant="outline" className="flex-1 border-white/10 bg-transparent" onClick={() => setEdit(null)}>Cancelar</Button>
-                <Button className="flex-1 bg-[#4c82e3] hover:bg-[#3a64b8] text-white" disabled={saving} onClick={() => void saveEdit()}>
+                <Button className="flex-1 bg-[#2f6bff] hover:bg-[#3a64b8] text-white" disabled={saving} onClick={() => void saveEdit()}>
                   {saving ? "Guardando…" : "Confirmar"}
                 </Button>
               </div>
@@ -1725,6 +1984,11 @@ function TradePanel({
   strategy,
   tickSpec,
   maxContracts,
+  activePosition,
+  onClosePosition,
+  onReverse,
+  onFlattenAll,
+  onCancelAll,
 }: {
   bidPrice: number;
   askPrice: number;
@@ -1755,6 +2019,11 @@ function TradePanel({
   strategy: TerminalStrategy;
   tickSpec: FuturesTickSpec | null;
   maxContracts: number | null;
+  activePosition?: CopyTradingPosition | null;
+  onClosePosition?: () => void;
+  onReverse?: () => void;
+  onFlattenAll?: () => void;
+  onCancelAll?: () => void;
 }) {
   const ratio = reward > 0 && risk > 0 ? `1 : ${(reward / risk).toFixed(2)}` : "—";
   const hasData = bidPrice > 0;
@@ -1767,6 +2036,9 @@ function TradePanel({
   // lots), so the displayed Riesgo stays consistent. Setting the volume feeds
   // the rest of the normal submit flow.
   const [riskPct, setRiskPct] = useState<string>("1");
+  // AlphaTrader futures ticket: OCO/Bracket toggle drives the shared TP/SL
+  // enablement flags so the existing place-order flow attaches the bracket.
+  const [bracketOn, setBracketOn] = useState<boolean>(false);
   const slDist = isRisk && parseFloat(stopLossPrice) > 0 ? Math.abs(lastPrice - parseFloat(stopLossPrice)) : 0;
   const riskUsd = capital != null && parseFloat(riskPct) > 0 ? capital * (parseFloat(riskPct) / 100) : 0;
   // Mode-aware sizing: CFD reproduces the naive `riskUsd/slDist` lots exactly;
@@ -1798,6 +2070,216 @@ function TradePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoTpSl, symbol, hasData]);
 
+  // ── AlphaTrader futures ticket (contracts) ───────────────────────────────
+  if (isFutures) {
+    const contractCount = Math.max(1, parseInt(volume || "1", 10) || 1);
+    const clampQty = (n: number) => {
+      const floored = Math.max(1, Math.round(n));
+      return maxContracts != null && maxContracts > 0 ? Math.min(floored, maxContracts) : floored;
+    };
+    const setQty = (n: number) => setVolume(String(clampQty(n)));
+    const stepQty = (d: number) => setQty(contractCount + d);
+    const posPx = (v: number | null | undefined) => (v == null ? "—" : v.toFixed(v > 0 && v < 20 ? 5 : 2));
+    const toggleBracket = (v: boolean) => {
+      setBracketOn(v);
+      setTakeProfitEnabled(v);
+      setStopLossEnabled(v);
+      if (v && hasData) {
+        if (!(parseFloat(takeProfitPrice) > 0)) setTakeProfitPrice((lastPrice + 50 * pipSize).toFixed(priceDec));
+        if (!(parseFloat(stopLossPrice) > 0)) setStopLossPrice((lastPrice - 50 * pipSize).toFixed(priceDec));
+      }
+    };
+    const qtyPresets = [1, 3, 5, 10, 15];
+    const secBtn = "h-9 rounded-md border border-white/12 bg-transparent text-[11px] font-semibold uppercase tracking-wide text-white/80 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors";
+    return (
+      <div className="flex flex-col h-full overflow-hidden">
+        <div className="px-3 py-2.5 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-white/70">Order</span>
+          <span className="text-[10px] text-white/40 uppercase tracking-wide">Futuros · Contratos</span>
+        </div>
+        <div className="px-3 pt-3 pb-2 space-y-3 overflow-y-auto flex-1">
+          {/* CONTRACTS */}
+          <div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Contracts</div>
+            <div className="flex items-center justify-between rounded-md border border-white/10 bg-[#151824] px-3 py-2 text-sm">
+              <span className="truncate text-white/90">{symbol ? formatSymbolDisplay(symbol) : "Selecciona un símbolo"}</span>
+              <ChevronDown className="h-4 w-4 text-white/40 shrink-0" />
+            </div>
+          </div>
+          {/* ORDER TYPE */}
+          <div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Order Type</div>
+            <div className="flex items-center justify-between rounded-md border border-white/10 bg-[#151824] px-3 py-2 text-sm">
+              <span className="text-white/90">Market</span>
+              <ChevronDown className="h-4 w-4 text-white/40 shrink-0" />
+            </div>
+          </div>
+          {/* # OF CONTRACTS */}
+          <div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1"># of Contracts</div>
+            <Input
+              value={volume}
+              inputMode="numeric"
+              onChange={(e) => setVolume(e.target.value.replace(/[^\d]/g, ""))}
+              className="h-9 bg-[#151824] border-white/10 text-white tabular-nums"
+            />
+            <div className="text-[10px] text-white/40 mt-1 tabular-nums">
+              {contractCount} contrato(s){maxContracts != null && maxContracts > 0 ? ` · máx ${maxContracts} (Apex)` : ""}
+            </div>
+          </div>
+          {/* Quick-qty row */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => stepQty(-1)}
+              className="h-8 w-8 shrink-0 rounded-md border border-white/10 bg-[#151824] text-white/80 hover:bg-white/10 transition-colors"
+            >
+              −
+            </button>
+            {qtyPresets.map((n) => {
+              const active = contractCount === n;
+              return (
+                <button
+                  key={n}
+                  onClick={() => setQty(n)}
+                  className={cn(
+                    "h-8 flex-1 rounded-md border text-[12px] font-semibold tabular-nums transition-colors",
+                    active ? "border-[#2f6bff] bg-[#2f6bff] text-white" : "border-white/10 bg-[#151824] text-white/70 hover:bg-white/10",
+                  )}
+                >
+                  {n}
+                </button>
+              );
+            })}
+            <button
+              onClick={() => stepQty(1)}
+              className="h-8 w-8 shrink-0 rounded-md border border-white/10 bg-[#151824] text-white/80 hover:bg-white/10 transition-colors"
+            >
+              +
+            </button>
+          </div>
+          {/* Active Positions */}
+          <div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Active Positions</div>
+            <div
+              className={cn(
+                "rounded-md border px-3 py-2 text-sm text-center tabular-nums",
+                activePosition ? "border-[#2f6bff]/40 bg-[#2f6bff]/10 text-white" : "border-white/10 bg-[#151824] text-white/45",
+              )}
+            >
+              {activePosition
+                ? `${activePosition.side === "LONG" ? "LONG" : "SHORT"} ${activePosition.qty} @ ${posPx(activePosition.avgPrice)}`
+                : "No Active Positions"}
+            </div>
+          </div>
+          {/* Bid / Last / Ask */}
+          <div className="grid grid-cols-3 rounded-md overflow-hidden border border-white/10 text-center">
+            <div className="bg-[#ef5350]/10 py-2">
+              <div className="text-[9px] uppercase tracking-wide text-[#ef6863]">Bid</div>
+              <div className="text-sm tabular-nums text-[#ff8580]">{hasData ? bidPrice.toFixed(priceDec) : "—"}</div>
+            </div>
+            <div className="bg-[#151824] py-2">
+              <div className="text-[9px] uppercase tracking-wide text-white/45">Last</div>
+              <div className="text-sm tabular-nums text-white/80">{hasData ? lastPrice.toFixed(priceDec) : "—"}</div>
+            </div>
+            <div className="bg-[#2ed68d]/10 py-2">
+              <div className="text-[9px] uppercase tracking-wide text-[#42d99a]">Ask</div>
+              <div className="text-sm tabular-nums text-[#5ce3ab]">{hasData ? askPrice.toFixed(priceDec) : "—"}</div>
+            </div>
+          </div>
+          {/* OCO / Bracket */}
+          <div className="rounded-md border border-white/10 bg-[#151824] px-3 py-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[12px] font-semibold text-white/90">OCO/Bracket Order</div>
+                <div className="text-[10px] text-white/45">One-Cancels-Other with TP/SL</div>
+              </div>
+              <Switch checked={bracketOn} onCheckedChange={toggleBracket} />
+            </div>
+            {bracketOn && (
+              <div className="mt-3 space-y-2">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-[#2ed68d] mb-1">Take Profit</div>
+                  <Input
+                    value={takeProfitPrice}
+                    onChange={(e) => setTakeProfitPrice(e.target.value)}
+                    disabled={!hasData}
+                    className="h-9 bg-[#0d0f16] border-white/10 text-white tabular-nums"
+                    placeholder={hasData ? "" : "Sin precio"}
+                  />
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wide text-[#ef5350] mb-1">Stop Loss</div>
+                  <Input
+                    value={stopLossPrice}
+                    onChange={(e) => setStopLossPrice(e.target.value)}
+                    disabled={!hasData}
+                    className="h-9 bg-[#0d0f16] border-white/10 text-white tabular-nums"
+                    placeholder={hasData ? "" : "Sin precio"}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        {/* BUY / SELL @ MARKET */}
+        <div className="grid grid-cols-2 gap-2 px-3 pt-2 shrink-0">
+          <Button
+            disabled={!ordersEnabled || !hasData || submitting}
+            onClick={() => onSubmit("buy")}
+            className="h-12 bg-[#1aa86a] hover:bg-[#1fbd78] text-white font-bold text-[13px] tracking-wide disabled:opacity-40"
+          >
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : `BUY +${contractCount} @ MARKET`}
+          </Button>
+          <Button
+            disabled={!ordersEnabled || !hasData || submitting}
+            onClick={() => onSubmit("sell")}
+            className="h-12 bg-[#e0413d] hover:bg-[#ef5350] text-white font-bold text-[13px] tracking-wide disabled:opacity-40"
+          >
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : `SELL -${contractCount} @ MARKET`}
+          </Button>
+        </div>
+        {/* Secondary actions */}
+        <div className="grid grid-cols-2 gap-2 px-3 pt-2 pb-2 shrink-0">
+          <Button variant="outline" disabled={!onClosePosition} onClick={onClosePosition} className={secBtn}>
+            Close Position
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!ordersEnabled || !activePosition || !onReverse}
+            title={!activePosition ? "Sin posición abierta" : "Cierra y abre la opuesta"}
+            onClick={onReverse}
+            className={secBtn}
+          >
+            Reverse Position
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!ordersEnabled || !onFlattenAll}
+            title="Cierra todas las posiciones + cancela órdenes"
+            onClick={onFlattenAll}
+            className={secBtn}
+          >
+            Flatten All
+          </Button>
+          <Button
+            variant="outline"
+            disabled={!ordersEnabled || !onCancelAll}
+            title="Cancela todas las órdenes pendientes"
+            onClick={onCancelAll}
+            className={secBtn}
+          >
+            Cancel All
+          </Button>
+        </div>
+        <div className={cn("text-[10px] text-center py-1.5 border-t border-white/10 shrink-0", !ordersEnabled ? "text-[#e3b341]" : "text-white/40")}>
+          {!ordersEnabled
+            ? "Órdenes de futuros: próximamente · solo vista previa"
+            : "Orden de mercado · Ejecución inmediata"}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-full overflow-hidden">
       <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between gap-2 shrink-0">
@@ -1805,7 +2287,7 @@ function TradePanel({
         <select
           value={orderMode}
           onChange={(e) => setOrderMode(e.target.value as OrderMode)}
-          className="shrink-0 rounded-md border border-white/10 bg-[#121826] px-2 py-1 text-[11px] text-white/80 outline-none hover:border-white/20 cursor-pointer"
+          className="shrink-0 rounded-md border border-white/10 bg-[#151824] px-2 py-1 text-[11px] text-white/80 outline-none hover:border-white/20 cursor-pointer"
           title="Modo de apertura de órdenes"
         >
           <option value="regular">Formulario regular</option>
@@ -1818,7 +2300,7 @@ function TradePanel({
           <span className="text-[10px] font-semibold tracking-wide text-[#ef6863]">VENDER</span>
           <span className="text-base font-semibold text-[#ff8580] tabular-nums">{hasData ? bidPrice.toFixed(priceDec) : "—"}</span>
         </div>
-        <div className="flex flex-col items-center justify-center gap-1 rounded-lg bg-[#121826] px-1 py-2.5">
+        <div className="flex flex-col items-center justify-center gap-1 rounded-lg bg-[#151824] px-1 py-2.5">
           <span className="text-[9px] tracking-wide text-white/45">SPREAD</span>
           <span className="text-sm text-[#cdd3dd] tabular-nums">{hasData ? (spread * Math.pow(10, priceDec - 1)).toFixed(1) : "—"}</span>
         </div>
@@ -1841,7 +2323,7 @@ function TradePanel({
               className={cn(
                 "flex-1 py-2 text-xs font-semibold uppercase tracking-wider transition-colors",
                 disabled && "opacity-30 cursor-not-allowed",
-                orderType === t ? "text-white border-b-2 border-[#4c82e3]" : "text-white/50 hover:text-white/80",
+                orderType === t ? "text-white border-b-2 border-[#2f6bff]" : "text-white/50 hover:text-white/80",
               )}
             >
               {t}
@@ -1851,7 +2333,7 @@ function TradePanel({
       </div>
       <div className="px-3 py-3 space-y-3 overflow-y-auto flex-1">
         {isRisk && (
-          <div className="rounded-lg border border-[#4c82e3]/25 bg-[#4c82e3]/5 p-2.5 space-y-2.5">
+          <div className="rounded-lg border border-[#2f6bff]/25 bg-[#2f6bff]/5 p-2.5 space-y-2.5">
             <div className="text-[10px] text-[#7aa6ee] uppercase tracking-wider font-semibold">Cálculo de riesgo</div>
             <div>
               <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">Riesgo (% del capital)</div>

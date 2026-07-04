@@ -13,13 +13,13 @@ All colors MUST be HSL.
     --font-ui: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
     --font-mono: "IBM Plex Mono", monospace;
 
-    --background: 222 47% 11%;
+    --background: 222 27% 6%;
     --foreground: 210 40% 98%;
 
-    --card: 217 33% 17%;
+    --card: 222 22% 7%;
     --card-foreground: 210 40% 98%;
 
-    --popover: 222 47% 11%;
+    --popover: 222 27% 6%;
     --popover-foreground: 210 40% 98%;
 
     --primary: 142 76% 36%;
@@ -43,8 +43,8 @@ All colors MUST be HSL.
     --warning: 38 92% 50%;
     --warning-foreground: 26 83% 14%;
 
-    --border: 217 33% 24%;
-    --input: 217 33% 24%;
+    --border: 220 26% 14%;
+    --input: 220 26% 14%;
     --ring: 142 76% 36%;
 
     --radius: 0.5rem;
@@ -66,13 +66,13 @@ All colors MUST be HSL.
   }
 
   .dark {
-    --background: 222 47% 11%;
+    --background: 222 27% 6%;
     --foreground: 210 40% 98%;
 
-    --card: 217 33% 17%;
+    --card: 222 22% 7%;
     --card-foreground: 210 40% 98%;
 
-    --popover: 222 47% 11%;
+    --popover: 222 27% 6%;
     --popover-foreground: 210 40% 98%;
 
     --primary: 142 76% 36%;
@@ -96,8 +96,8 @@ All colors MUST be HSL.
     --warning: 38 92% 50%;
     --warning-foreground: 26 83% 14%;
 
-    --border: 217 33% 24%;
-    --input: 217 33% 24%;
+    --border: 220 26% 14%;
+    --input: 220 26% 14%;
     --ring: 142 76% 36%;
 
     --sidebar-background: 217 33% 17%;
@@ -586,17 +586,17 @@ body[data-scroll-locked], [data-scroll-locked] {
 
 /* ── @klinecharts/pro theme seam ─────────────────────────────────────────────
    El fork trae un dark propio (#151517 / #1c1c1f) que choca con la paleta del
-   terminal (#0a0e16 / #0b1019 / #121826). Sobreescribimos sus custom props para
+   terminal (#0a0c12 / #0d0f16 / #151824). Sobreescribimos sus custom props para
    que el chart Pro se funda con la app. No requiere rebuild del fork. */
 .klinecharts-pro[data-theme="dark"] {
-  --klinecharts-pro-primary-color: #4c82e3;
+  --klinecharts-pro-primary-color: #2f6bff;
   --klinecharts-pro-hover-background-color: rgba(255, 255, 255, 0.06);
-  --klinecharts-pro-background-color: #0a0e16;
-  --klinecharts-pro-popover-background-color: #121826;
+  --klinecharts-pro-background-color: #0a0c12;
+  --klinecharts-pro-popover-background-color: #151824;
   --klinecharts-pro-text-color: #e6e9ef;
   --klinecharts-pro-text-second-color: rgba(255, 255, 255, 0.55);
   --klinecharts-pro-border-color: rgba(255, 255, 255, 0.10);
-  --klinecharts-pro-selected-color: rgba(76, 130, 227, 0.15);
+  --klinecharts-pro-selected-color: rgba(47, 107, 255, 0.15);
 }
 
 /* @klinecharts/pro — estilos de nuestras adiciones del fork (popover de texto y

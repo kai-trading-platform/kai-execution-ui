@@ -150,8 +150,8 @@ const CHART_STYLES = {
   xAxis: { axisLine: { color: 'rgba(255,255,255,0.06)' }, tickText: { color: 'rgba(226,228,233,0.55)' } },
   yAxis: { axisLine: { color: 'rgba(255,255,255,0.06)' }, tickText: { color: 'rgba(226,228,233,0.55)' } },
   crosshair: {
-    horizontal: { line: { color: 'rgba(148,163,184,0.4)' }, text: { backgroundColor: '#0b1019' } },
-    vertical: { line: { color: 'rgba(148,163,184,0.4)' }, text: { backgroundColor: '#0b1019' } },
+    horizontal: { line: { color: 'rgba(148,163,184,0.4)' }, text: { backgroundColor: '#0d0f16' } },
+    vertical: { line: { color: 'rgba(148,163,184,0.4)' }, text: { backgroundColor: '#0d0f16' } },
   },
 };
 
@@ -650,7 +650,7 @@ export function KaiChart({
   const handleTakeScreenshot = useCallback(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const url = chart.getConvertPictureUrl(true, 'jpeg', '#0a0e16');
+    const url = chart.getConvertPictureUrl(true, 'jpeg', '#0a0c12');
     const link = document.createElement('a');
     link.download = `${symbol || 'chart'}-${timeframe}.jpeg`;
     link.href = url;
@@ -721,17 +721,17 @@ export function KaiChart({
   }, {});
 
   return (
-    <div className={cn('flex h-full min-h-0 flex-col overflow-hidden bg-[#0a0e16]', className)}>
+    <div className={cn('flex h-full min-h-0 flex-col overflow-hidden bg-[#0a0c12]', className)}>
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* Drawing tools */}
-        <div className="hidden w-11 shrink-0 flex-col items-center gap-1 border-r border-[#1c2433]/70 bg-[#0b1019] py-2 sm:flex">
+        <div className="hidden w-11 shrink-0 flex-col items-center gap-1 border-r border-[#202634]/70 bg-[#0d0f16] py-2 sm:flex">
           {DRAWING_TOOLS.map((tool) => {
             if (tool.separator) {
-              return <div key={tool.id} className="my-0.5 h-px w-6 bg-[#1c2433]/70" />;
+              return <div key={tool.id} className="my-0.5 h-px w-6 bg-[#202634]/70" />;
             }
             const isActive = tool.id === 'magnet' ? magnet : activeTool === tool.id;
             const Icon = tool.icon;
-            const activeColor = tool.danger ? 'text-[#ef5350] bg-[#ef5350]/12' : 'text-[#4c82e3] bg-[#4c82e3]/12';
+            const activeColor = tool.danger ? 'text-[#ef5350] bg-[#ef5350]/12' : 'text-[#2f6bff] bg-[#2f6bff]/12';
             return (
               <button
                 key={tool.id}
@@ -750,9 +750,9 @@ export function KaiChart({
 
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Header */}
-          <div className="flex min-h-[52px] flex-wrap items-center gap-2 border-b border-[#1c2433]/70 bg-[#0b1019] px-3 py-2 sm:flex-nowrap sm:gap-3">
+          <div className="flex min-h-[52px] flex-wrap items-center gap-2 border-b border-[#202634]/70 bg-[#0d0f16] px-3 py-2 sm:flex-nowrap sm:gap-3">
             <div className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded border border-[#1c2433]/70 bg-[#121826]">
+              <div className="flex h-8 w-8 items-center justify-center rounded border border-[#202634]/70 bg-[#151824]">
                 <span className="text-[11px] font-bold text-[#e7ebf2]">{symbol?.slice(0, 2).toUpperCase() || '—'}</span>
               </div>
               <div>
@@ -773,10 +773,10 @@ export function KaiChart({
               </div>
             </div>
 
-            <div className="h-6 w-px bg-[#1c2433]/70" />
+            <div className="h-6 w-px bg-[#202634]/70" />
 
             {/* Timeframes */}
-            <div className="order-last flex w-full items-center gap-0.5 overflow-x-auto rounded bg-[#121826] p-0.5 sm:order-none sm:w-auto" style={{ scrollbarWidth: "none" }}>
+            <div className="order-last flex w-full items-center gap-0.5 overflow-x-auto rounded bg-[#151824] p-0.5 sm:order-none sm:w-auto" style={{ scrollbarWidth: "none" }}>
               {TIMEFRAMES.map((tf) => (
                 <button
                   key={tf}
@@ -784,7 +784,7 @@ export function KaiChart({
                   className={cn(
                     'rounded px-2 py-1 text-[10px] font-bold transition-colors',
                     timeframe === tf
-                      ? 'bg-[#4c82e3]/15 text-[#4c82e3]'
+                      ? 'bg-[#2f6bff]/15 text-[#2f6bff]'
                       : 'text-[#6c7484] hover:bg-[#1a2230] hover:text-[#e7ebf2]'
                   )}
                 >
@@ -832,7 +832,7 @@ export function KaiChart({
           </div>
 
           {/* Chart Area */}
-          <div className="relative min-h-0 flex-1 bg-[#0a0e16]">
+          <div className="relative min-h-0 flex-1 bg-[#0a0c12]">
             <div ref={containerRef} className="absolute inset-0" />
             {/* Profit (green) / loss (red) zones between entry and TP/SL */}
             {posZones.map((z) => (
@@ -846,29 +846,29 @@ export function KaiChart({
             {posLabels.map((l) => (
               <div
                 key={l.id}
-                className="pointer-events-none absolute right-[60px] z-20 -translate-y-1/2 rounded border bg-[#0b1019]/95 px-1.5 py-[1px] font-mono text-[10px] font-semibold whitespace-nowrap"
+                className="pointer-events-none absolute right-[60px] z-20 -translate-y-1/2 rounded border bg-[#0d0f16]/95 px-1.5 py-[1px] font-mono text-[10px] font-semibold whitespace-nowrap"
                 style={{ top: l.y, borderColor: l.color, color: l.color }}
               >
                 {l.label}
               </div>
             ))}
             {tfInput !== null && (
-              <div className="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-md border border-[#4c82e3]/40 bg-[#0b1019]/95 px-4 py-2 text-center shadow-lg">
+              <div className="pointer-events-none absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-md border border-[#2f6bff]/40 bg-[#0d0f16]/95 px-4 py-2 text-center shadow-lg">
                 <p className="text-[10px] uppercase tracking-wider text-white/40">Temporalidad</p>
                 <p className="font-mono text-lg font-semibold text-[#e7ebf2]">{tfInput || "…"}</p>
                 <p className="text-[9px] text-white/35 mt-0.5">Enter para aplicar</p>
               </div>
             )}
             {loadingCandles && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0e16]/90">
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0c12]/90">
                 <div className="text-center space-y-2">
-                  <div className="h-6 w-6 border-2 border-[#4c82e3]/30 border-t-[#4c82e3] rounded-full animate-spin mx-auto" />
+                  <div className="h-6 w-6 border-2 border-[#2f6bff]/30 border-t-[#2f6bff] rounded-full animate-spin mx-auto" />
                   <p className="text-[11px] text-[#6c7484]">Cargando velas...</p>
                 </div>
               </div>
             )}
             {!loadingCandles && candlesError && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0e16]/90">
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0c12]/90">
                 <div className="text-center space-y-2 max-w-xs">
                   <AlertCircle className="h-6 w-6 text-[#ef5350] mx-auto" />
                   <p className="text-[12px] text-[#ef5350] font-medium">Sin datos de mercado disponibles</p>
@@ -876,7 +876,7 @@ export function KaiChart({
               </div>
             )}
             {!loadingCandles && !candlesError && candles.length === 0 && accountId && symbol && (
-              <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0e16]/90">
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#0a0c12]/90">
                 <div className="text-center space-y-2 max-w-xs">
                   <AlertCircle className="h-6 w-6 text-[#6c7484] mx-auto" />
                   <p className="text-[12px] font-semibold text-[#e7ebf2]">Sin datos para {symbol}</p>
@@ -887,7 +887,7 @@ export function KaiChart({
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-between border-t border-[#1c2433]/70 bg-[#0b1019] px-3 py-1.5 text-[9px] text-[#6c7484]">
+          <div className="flex items-center justify-between border-t border-[#202634]/70 bg-[#0d0f16] px-3 py-1.5 text-[9px] text-[#6c7484]">
             <div className="flex items-center gap-2">
               <span className="font-mono">Última: {formatCandleTime(lastCandleTime)}</span>
             </div>
@@ -901,7 +901,7 @@ export function KaiChart({
       </div>
 
       <Dialog open={showIndicators} onOpenChange={setShowIndicators}>
-        <DialogContent className="max-w-md border-[#1c2433]/70 bg-[#0b1019]">
+        <DialogContent className="max-w-md border-[#202634]/70 bg-[#0d0f16]">
           <DialogHeader>
             <DialogTitle className="text-[#e7ebf2]">Indicadores</DialogTitle>
             <DialogDescription className="sr-only">
@@ -913,7 +913,7 @@ export function KaiChart({
               placeholder="Buscar indicador..."
               value={indicatorSearch}
               onChange={(e) => setIndicatorSearch(e.target.value)}
-              className="border-[#1c2433]/70 bg-[#121826] text-[#e7ebf2] placeholder:text-[#6c7484]"
+              className="border-[#202634]/70 bg-[#151824] text-[#e7ebf2] placeholder:text-[#6c7484]"
             />
             <div className="max-h-[300px] overflow-y-auto space-y-3">
               {Object.entries(filteredIndicators).map(([category, indicators]) => (
@@ -928,7 +928,7 @@ export function KaiChart({
                           'px-2 py-1 rounded text-[11px] transition-colors',
                           activeIndicators.includes(indicator)
                             ? 'bg-[#2ed68d]/20 text-[#2ed68d] border border-[#2ed68d]/30'
-                            : 'border border-[#1c2433]/70 bg-[#121826] text-[#6c7484] hover:bg-[#1a2230] hover:text-[#e7ebf2]'
+                            : 'border border-[#202634]/70 bg-[#151824] text-[#6c7484] hover:bg-[#1a2230] hover:text-[#e7ebf2]'
                         )}
                       >
                         {indicator}
@@ -943,7 +943,7 @@ export function KaiChart({
       </Dialog>
 
       <Dialog open={Boolean(editPos)} onOpenChange={(open) => !open && setEditPos(null)}>
-        <DialogContent className="max-w-sm border-[#1c2433]/70 bg-[#0b1019] p-0 text-[#e7ebf2] overflow-hidden">
+        <DialogContent className="max-w-sm border-[#202634]/70 bg-[#0d0f16] p-0 text-[#e7ebf2] overflow-hidden">
           <DialogTitle className="sr-only">Modificar posición</DialogTitle>
           <DialogDescription className="sr-only">
             Ajusta el Take Profit y el Stop Loss de la posición seleccionada.
@@ -986,7 +986,7 @@ export function KaiChart({
             const Field = ({ label, color, value, set, deltaNode }: { label: string; color: string; value: string; set: (v: string) => void; deltaNode: ReactNode }) => (
               <div className="px-4 pt-3">
                 <div className="mb-1.5 text-[11px] font-semibold" style={{ color }}>{label}</div>
-                <div className="flex items-center gap-2 rounded-lg border bg-[#121826] px-2" style={{ borderColor: `${color}40` }}>
+                <div className="flex items-center gap-2 rounded-lg border bg-[#151824] px-2" style={{ borderColor: `${color}40` }}>
                   <input
                     value={value}
                     onChange={(e) => set(e.target.value)}
@@ -996,8 +996,8 @@ export function KaiChart({
                   {value && (
                     <button onClick={() => set('')} className="text-white/40 hover:text-white" aria-label="Limpiar">✕</button>
                   )}
-                  <button onClick={() => set(bump(value, -1))} className="flex h-7 w-7 items-center justify-center rounded bg-[#0b1019] text-white/70 hover:text-white">−</button>
-                  <button onClick={() => set(bump(value, 1))} className="flex h-7 w-7 items-center justify-center rounded bg-[#0b1019] text-white/70 hover:text-white">+</button>
+                  <button onClick={() => set(bump(value, -1))} className="flex h-7 w-7 items-center justify-center rounded bg-[#0d0f16] text-white/70 hover:text-white">−</button>
+                  <button onClick={() => set(bump(value, 1))} className="flex h-7 w-7 items-center justify-center rounded bg-[#0d0f16] text-white/70 hover:text-white">+</button>
                 </div>
                 {deltaNode}
               </div>
@@ -1024,7 +1024,7 @@ export function KaiChart({
                 <Field label="Stop loss" color="#ef5350" value={editSl} set={setEditSl} deltaNode={fmtDelta(slD, false)} />
                 <div className="p-4 pt-4">
                   <Button
-                    className="h-11 w-full bg-[#4c82e3] text-[14px] font-semibold text-white hover:bg-[#3a64b8]"
+                    className="h-11 w-full bg-[#2f6bff] text-[14px] font-semibold text-white hover:bg-[#3a64b8]"
                     disabled={savingStops}
                     onClick={() => void saveStops()}
                   >

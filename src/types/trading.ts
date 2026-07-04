@@ -11,6 +11,14 @@ export interface BrokerCapabilities {
   closePosition: boolean;
   closePositionBy?: boolean;
   updateStops: boolean;
+  /**
+   * Futures-terminal bulk/flip actions (Rithmic only). Gated by the same
+   * RITHMIC_TERMINAL_ORDERS_ENABLED kill-switch as the other Rithmic writes and
+   * by connection status; undefined/false → the button stays disabled.
+   */
+  flattenAll?: boolean;
+  cancelAllOrders?: boolean;
+  reversePosition?: boolean;
 }
 
 export interface ConnectedTradingAccount {
@@ -126,6 +134,58 @@ export interface UpdateTradingPositionStopsResult {
   ticket: string;
   stopLoss: number;
   takeProfit: number;
+  message?: string;
+  dryRun?: boolean;
+}
+
+export interface FlattenAllPositionsPayload {
+  tradingAccountId: string;
+  dryRun?: boolean;
+  confirmationText?: string | null;
+}
+
+export interface FlattenAllPositionsResult {
+  success: boolean;
+  provider: BrokerProviderKey;
+  tradingAccountId: string;
+  message?: string;
+  dryRun?: boolean;
+}
+
+export interface CancelAllOrdersPayload {
+  tradingAccountId: string;
+  dryRun?: boolean;
+  confirmationText?: string | null;
+}
+
+export interface CancelAllOrdersResult {
+  success: boolean;
+  provider: BrokerProviderKey;
+  tradingAccountId: string;
+  message?: string;
+  dryRun?: boolean;
+}
+
+export interface ReversePositionPayload {
+  tradingAccountId: string;
+  ticket: string;
+  /**
+   * Absolute SL/TP/entry for the NEW (reversed) position. The Rithmic per-trade
+   * risk gate is fail-closed and REQUIRES an SL (+ entry) to bound the flip's
+   * loss — a reverse without a protective SL is refused server-side by design.
+   */
+  stopLoss?: number | null;
+  takeProfit?: number | null;
+  entry?: number | null;
+  dryRun?: boolean;
+  confirmationText?: string | null;
+}
+
+export interface ReversePositionResult {
+  success: boolean;
+  provider: BrokerProviderKey;
+  tradingAccountId: string;
+  ticket: string;
   message?: string;
   dryRun?: boolean;
 }

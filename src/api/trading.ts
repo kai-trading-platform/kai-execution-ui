@@ -5,8 +5,14 @@ import type {
   CloseTradingPositionByPayload,
   CloseTradingPositionByResult,
   CloseTradingPositionResult,
+  CancelAllOrdersPayload,
+  CancelAllOrdersResult,
+  FlattenAllPositionsPayload,
+  FlattenAllPositionsResult,
   PlaceTradingOrderPayload,
   PlaceTradingOrderResult,
+  ReversePositionPayload,
+  ReversePositionResult,
   TradingPosition,
   UpdateTradingPositionStopsPayload,
   UpdateTradingPositionStopsResult,
@@ -82,6 +88,68 @@ export function updateTradingPositionStops(
         dryRun: payload.dryRun === false ? false : true,
         confirmationText: payload.confirmationText,
       },
+    },
+  );
+}
+
+// FLATTEN ALL — close every position + cancel every working order on the
+// account. Safe default: dryRun true unless the caller explicitly passes false
+// (mirrors closeTradingPosition). Sends an Idempotency-Key like place/close.
+export function flattenAllPositions(
+  payload: FlattenAllPositionsPayload,
+): Promise<FlattenAllPositionsResult> {
+  return nestAuthFetch<FlattenAllPositionsResult>(
+    "/api/trading/positions/close-all",
+    {
+      method: "POST",
+      json: {
+        tradingAccountId: payload.tradingAccountId,
+        dryRun: payload.dryRun === false ? false : true,
+        confirmationText: payload.confirmationText,
+      },
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    },
+  );
+}
+
+// CANCEL ALL — cancel every working order (positions untouched). Safe default:
+// dryRun true unless the caller explicitly passes false.
+export function cancelAllOrders(
+  payload: CancelAllOrdersPayload,
+): Promise<CancelAllOrdersResult> {
+  return nestAuthFetch<CancelAllOrdersResult>(
+    "/api/trading/orders/cancel-all",
+    {
+      method: "POST",
+      json: {
+        tradingAccountId: payload.tradingAccountId,
+        dryRun: payload.dryRun === false ? false : true,
+        confirmationText: payload.confirmationText,
+      },
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    },
+  );
+}
+
+// REVERSE — flip a position (close + open opposite). Money-critical: safe
+// default dryRun true; the server requires a protective SL (+ entry) to pass the
+// fail-closed per-trade risk gate before a real flip executes.
+export function reversePosition(
+  payload: ReversePositionPayload,
+): Promise<ReversePositionResult> {
+  return nestAuthFetch<ReversePositionResult>(
+    `/api/trading/positions/${encodeURIComponent(payload.ticket)}/reverse`,
+    {
+      method: "POST",
+      json: {
+        tradingAccountId: payload.tradingAccountId,
+        stopLoss: payload.stopLoss ?? undefined,
+        takeProfit: payload.takeProfit ?? undefined,
+        entry: payload.entry ?? undefined,
+        dryRun: payload.dryRun === false ? false : true,
+        confirmationText: payload.confirmationText,
+      },
+      headers: { "Idempotency-Key": crypto.randomUUID() },
     },
   );
 }
