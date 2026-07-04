@@ -80,6 +80,22 @@ const App = () => (
                     </RequireAuth>
                   }
                 />
+                <Route
+                  path={routePaths.TRADING_FUTURES}
+                  element={
+                    <RequireAuth>
+                      <TradingTerminalPage forcedMode="futures" />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path={routePaths.TRADING_CFD}
+                  element={
+                    <RequireAuth>
+                      <TradingTerminalPage forcedMode="cfd" />
+                    </RequireAuth>
+                  }
+                />
               </Routes>
             </BrowserRouter>
             </ConfirmDialogProvider>

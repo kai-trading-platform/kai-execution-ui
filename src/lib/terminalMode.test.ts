@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  accountsForRoute,
   clampToMaxContracts,
   estimateFuturesRisk,
   modeForProvider,
@@ -137,6 +138,44 @@ describe("resolveOrdersEnabled (Phase 5 capability gating)", () => {
 
   it("futures ENABLES only when the capability is true (flag on + connected)", () => {
     expect(resolveOrdersEnabled(futures, { placeMarketOrder: true })).toBe(true);
+  });
+});
+
+describe("accountsForRoute (Phase 6 — /trading/futuros + /trading/cfd selector filtering)", () => {
+  type Acct = { id: string; provider: string };
+  const rithmicA: Acct = { id: "r1", provider: "rithmic" };
+  const rithmicB: Acct = { id: "r2", provider: "rithmic" };
+  const mt5A: Acct = { id: "m1", provider: "mt5" };
+  const mt5B: Acct = { id: "m2", provider: "mt5" };
+  const accounts = [rithmicA, mt5A, rithmicB, mt5B];
+
+  it("returns every account unfiltered for the universal /trading/terminal entry (forcedMode undefined)", () => {
+    expect(accountsForRoute(accounts, undefined)).toEqual(accounts);
+  });
+
+  it("keeps only rithmic accounts for /trading/futuros (forcedMode 'futures')", () => {
+    expect(accountsForRoute(accounts, "futures")).toEqual([rithmicA, rithmicB]);
+  });
+
+  it("keeps only non-rithmic (mt5) accounts for /trading/cfd (forcedMode 'cfd')", () => {
+    expect(accountsForRoute(accounts, "cfd")).toEqual([mt5A, mt5B]);
+  });
+
+  it("treats any non-rithmic provider as cfd, consistent with modeForProvider", () => {
+    const unknown: Acct = { id: "u1", provider: "something-else" };
+    expect(accountsForRoute([unknown], "cfd")).toEqual([unknown]);
+    expect(accountsForRoute([unknown], "futures")).toEqual([]);
+  });
+
+  it("returns an empty list when no account matches the route's provider", () => {
+    expect(accountsForRoute([mt5A, mt5B], "futures")).toEqual([]);
+    expect(accountsForRoute([rithmicA], "cfd")).toEqual([]);
+  });
+
+  it("handles an empty accounts list for every route", () => {
+    expect(accountsForRoute([], undefined)).toEqual([]);
+    expect(accountsForRoute([], "futures")).toEqual([]);
+    expect(accountsForRoute([], "cfd")).toEqual([]);
   });
 });
 

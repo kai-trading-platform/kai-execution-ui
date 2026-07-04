@@ -147,6 +147,22 @@ export function clampToMaxContracts(
 }
 
 /**
+ * Filters an accounts list for a route-scoped terminal (Phase 6 — dos
+ * terminales): `/trading/futuros` lists only Rithmic accounts, `/trading/cfd`
+ * only non-Rithmic (MT5) ones. `forcedMode` is `undefined` for the universal
+ * `/trading/terminal` entry, which returns every account unfiltered so
+ * existing SSO deep-links (mode inferred from the selected account's
+ * `provider`) keep working byte-for-byte.
+ */
+export function accountsForRoute<T extends { provider?: TerminalProvider }>(
+  accounts: T[],
+  forcedMode: TerminalMode | undefined,
+): T[] {
+  if (!forcedMode) return accounts;
+  return accounts.filter((a) => modeForProvider(a.provider) === forcedMode);
+}
+
+/**
  * Estimated USD risk for an integer futures position of `contracts` given an SL
  * price distance and the symbol tick spec. Used for the sizing preview readout.
  * Returns 0 when inputs are insufficient.

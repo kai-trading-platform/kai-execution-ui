@@ -42,6 +42,7 @@ import {
   resolveOrdersEnabled,
   clampToMaxContracts,
   estimateFuturesRisk,
+  accountsForRoute,
   type TerminalMode,
   type TerminalStrategy,
   type FuturesTickSpec,
@@ -63,19 +64,47 @@ type OrderType = "MERCADO" | "LIMITE" | "STOP";
 type OrderMode = "regular" | "oneClick" | "risk";
 type Panel = "watchlist" | "trade" | "bottom";
 
-export default function TradingTerminalPage() {
+/**
+ * Phase 6 — route-scoped terminal entries. `undefined` (the universal
+ * `/trading/terminal` entry) lists every account and infers the mode from the
+ * selected account's provider, exactly as before (backward-compatible with
+ * existing SSO deep-links). `"futures"` / `"cfd"` (the `/trading/futuros` and
+ * `/trading/cfd` deep-links) filter the account selector to that provider and
+ * pin the terminal mode to it, so the route's promised experience renders
+ * even while accounts are loading or none match yet.
+ */
+interface TradingTerminalPageProps {
+  forcedMode?: TerminalMode;
+}
+
+export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageProps = {}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const accountId = searchParams.get("account");
   const { data: accounts = EMPTY_LIST, isLoading: accountsLoading } = useTradingAccounts();
 
+  // Route-scoped view of the accounts list: unfiltered for the universal
+  // /trading/terminal entry, narrowed to the route's provider for
+  // /trading/futuros and /trading/cfd (spec §6 — "selector FILTERED to that
+  // route's provider").
+  const routeAccounts = useMemo(
+    () => accountsForRoute(accounts, forcedMode),
+    [accounts, forcedMode],
+  );
+
   const resolvedAccount = useMemo(() => {
     if (accountId) {
-      const fromList = accounts.find((a: { providerAccountId?: string; id: string }) => a.providerAccountId === accountId);
+      const fromList = routeAccounts.find((a: { providerAccountId?: string; id: string }) => a.providerAccountId === accountId);
       if (fromList) return fromList;
     }
-    const firstConnected = accounts.find((a: { status?: string }) => a.status === "connected");
-    return firstConnected ?? accounts[0] ?? null;
-  }, [accountId, accounts]);
+    // ?account= is missing, or points at an account that doesn't match this
+    // route's provider (e.g. an MT5 id opened on /trading/futuros): fall back
+    // to the first connected account IN THIS ROUTE'S SCOPE, same as the
+    // pre-Phase-6 fallback did over the full list. Least-surprising choice
+    // over an empty state — the URL effect below reflects it back so the
+    // account param and header selector stay consistent.
+    const firstConnected = routeAccounts.find((a: { status?: string }) => a.status === "connected");
+    return firstConnected ?? routeAccounts[0] ?? null;
+  }, [accountId, routeAccounts]);
 
   // When ?account= is missing/empty (or doesn't match any account) we default
   // to the first connected account. Reflect that choice back into the URL so
@@ -86,7 +115,7 @@ export default function TradingTerminalPage() {
   useEffect(() => {
     if (!resolvedProviderId || accountId === resolvedProviderId) return;
     const matchesParam = Boolean(
-      accountId && accounts.some((a: { providerAccountId?: string | null }) => a.providerAccountId === accountId),
+      accountId && routeAccounts.some((a: { providerAccountId?: string | null }) => a.providerAccountId === accountId),
     );
     if (matchesParam) return;
     setSearchParams(
@@ -97,7 +126,7 @@ export default function TradingTerminalPage() {
       },
       { replace: true },
     );
-  }, [accountId, resolvedProviderId, accounts, setSearchParams]);
+  }, [accountId, resolvedProviderId, routeAccounts, setSearchParams]);
 
   const dbAccountId = (resolvedAccount as { id?: string } | null)?.id ?? null;
   const { data: positions = EMPTY_LIST, isLoading: positionsLoading } = useTradingPositions(dbAccountId);
@@ -107,8 +136,11 @@ export default function TradingTerminalPage() {
   // MT5 → CFD (lotes), Rithmic → Futuros (contratos). The strategy drives the
   // order ticket's units, stepping, default volume, sizing and whether orders
   // can be placed. CFD reproduces the historical behaviour byte-for-byte.
+  // On a route-scoped entry (forcedMode set), the route itself pins the mode
+  // — this keeps /trading/futuros showing the futures shell even with no
+  // resolved account yet (empty state), rather than briefly rendering CFD.
   const provider = (resolvedAccount as { provider?: string | null } | null)?.provider ?? null;
-  const terminalMode: TerminalMode = modeForProvider(provider);
+  const terminalMode: TerminalMode = forcedMode ?? modeForProvider(provider);
   // Order placement enablement is derived per-account from the DTO capability
   // (`placeMarketOrder`), which reflects the backend RITHMIC_TERMINAL_ORDERS_ENABLED
   // flag (default false) + connectivity. CFD stays byte-identical (always on);
@@ -644,7 +676,7 @@ export default function TradingTerminalPage() {
       <TopHeader
         accountName={resolvedAccount?.name ?? (accountsLoading ? "Cargando..." : "Sin cuenta")}
         accountNumber={accountId ?? resolvedAccount?.providerAccountId ?? "—"}
-        accounts={accounts as Array<{ id: string; name: string; providerAccountId?: string | null; status?: string }>}
+        accounts={routeAccounts as Array<{ id: string; name: string; providerAccountId?: string | null; status?: string }>}
         onSelect={(id) => {
           const url = new URL(window.location.href);
           url.searchParams.set("account", id);
