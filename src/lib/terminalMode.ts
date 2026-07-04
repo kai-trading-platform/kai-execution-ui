@@ -84,7 +84,10 @@ const FUTURES_STRATEGY: TerminalStrategy = {
   volumeStep: 1,
   minVolume: 1,
   defaultVolume: "1",
-  ordersEnabled: false, // Phase 4: preview only; enabled in Phase 5.
+  // Base default OFF. The effective enablement is derived per-account from the
+  // DTO capability via `resolveOrdersEnabled` (gated by the backend
+  // RITHMIC_TERMINAL_ORDERS_ENABLED flag), so this stays false as the safe floor.
+  ordersEnabled: false,
   formatVolume: (v) => String(Math.max(0, Math.round(v))),
   computeSize: (riskUsd, slDistancePrice, spec) => {
     if (!spec) return 0;
@@ -101,6 +104,30 @@ const FUTURES_STRATEGY: TerminalStrategy = {
 
 export function strategyForMode(mode: TerminalMode): TerminalStrategy {
   return mode === "futures" ? FUTURES_STRATEGY : CFD_STRATEGY;
+}
+
+/** Minimal shape of the account capabilities the terminal reads from the DTO. */
+export interface OrderCapabilities {
+  placeMarketOrder?: boolean;
+}
+
+/**
+ * Effective BUY/SELL enablement for the order ticket.
+ *   - CFD (MT5): keeps the strategy's own flag (historically always true).
+ *   - Futuros (Rithmic): gated by the backend capability `placeMarketOrder`,
+ *     which itself reflects the `RITHMIC_TERMINAL_ORDERS_ENABLED` flag (default
+ *     false) AND account connectivity. So futures orders auto-enable ONLY when
+ *     the backend flag is on and the capability is true; otherwise the ticket
+ *     stays preview-only ("Órdenes de futuros: próximamente").
+ */
+export function resolveOrdersEnabled(
+  strategy: TerminalStrategy,
+  capabilities?: OrderCapabilities | null,
+): boolean {
+  if (strategy.mode === "futures") {
+    return Boolean(capabilities?.placeMarketOrder);
+  }
+  return strategy.ordersEnabled;
 }
 
 export function strategyForProvider(provider: TerminalProvider): TerminalStrategy {

@@ -38,6 +38,7 @@ import { REAL_CONFIRMATION_TEXT } from "@/constants/tradingExecution";
 import {
   modeForProvider,
   strategyForMode,
+  resolveOrdersEnabled,
   clampToMaxContracts,
   estimateFuturesRisk,
   type TerminalMode,
@@ -107,7 +108,18 @@ export default function TradingTerminalPage() {
   // can be placed. CFD reproduces the historical behaviour byte-for-byte.
   const provider = (resolvedAccount as { provider?: string | null } | null)?.provider ?? null;
   const terminalMode: TerminalMode = modeForProvider(provider);
-  const strategy = useMemo(() => strategyForMode(terminalMode), [terminalMode]);
+  // Order placement enablement is derived per-account from the DTO capability
+  // (`placeMarketOrder`), which reflects the backend RITHMIC_TERMINAL_ORDERS_ENABLED
+  // flag (default false) + connectivity. CFD stays byte-identical (always on);
+  // futures BUY/SELL auto-enable ONLY when the backend flag is on and capability
+  // is true — otherwise the ticket is preview-only ("Órdenes de futuros: próximamente").
+  const capabilities =
+    (resolvedAccount as { capabilities?: { placeMarketOrder?: boolean } } | null)?.capabilities ?? null;
+  const strategy = useMemo(() => {
+    const base = strategyForMode(terminalMode);
+    const ordersEnabled = resolveOrdersEnabled(base, capabilities);
+    return ordersEnabled === base.ordersEnabled ? base : { ...base, ordersEnabled };
+  }, [terminalMode, capabilities]);
   // Apex `autotrading:maxContracts:<id>` cap. Not yet exposed on the accounts
   // DTO (see report/spec) — read defensively so it lights up if the backend
   // ever adds it; `null` today, so the clamp is inert.

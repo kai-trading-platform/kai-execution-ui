@@ -4,6 +4,7 @@ import {
   clampToMaxContracts,
   estimateFuturesRisk,
   modeForProvider,
+  resolveOrdersEnabled,
   strategyForMode,
   strategyForProvider,
   type FuturesTickSpec,
@@ -112,6 +113,30 @@ describe("clampToMaxContracts (Apex cap)", () => {
     expect(clampToMaxContracts(5, null)).toBe(5);
     expect(clampToMaxContracts(5, undefined)).toBe(5);
     expect(clampToMaxContracts(5, 0)).toBe(5);
+  });
+});
+
+describe("resolveOrdersEnabled (Phase 5 capability gating)", () => {
+  const cfd = strategyForMode("cfd");
+  const futures = strategyForMode("futures");
+
+  it("CFD stays enabled regardless of capabilities (byte-identical)", () => {
+    expect(resolveOrdersEnabled(cfd, null)).toBe(true);
+    expect(resolveOrdersEnabled(cfd, { placeMarketOrder: false })).toBe(true);
+    expect(resolveOrdersEnabled(cfd, undefined)).toBe(true);
+  });
+
+  it("futures stays DISABLED when the backend flag/capability is off (default)", () => {
+    // Flag OFF => backend reports placeMarketOrder:false => BUY/SELL disabled.
+    expect(resolveOrdersEnabled(futures, null)).toBe(false);
+    expect(resolveOrdersEnabled(futures, undefined)).toBe(false);
+    expect(resolveOrdersEnabled(futures, { placeMarketOrder: false })).toBe(false);
+    // The strategy's own default is also the safe floor (false).
+    expect(futures.ordersEnabled).toBe(false);
+  });
+
+  it("futures ENABLES only when the capability is true (flag on + connected)", () => {
+    expect(resolveOrdersEnabled(futures, { placeMarketOrder: true })).toBe(true);
   });
 });
 
