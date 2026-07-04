@@ -24,6 +24,13 @@ export interface ConnectedTradingAccount {
   isDefault: boolean;
   balance: number | null;
   equity: number | null;
+  /**
+   * Per-account futures contracts cap from `system_configs` key
+   * `autotrading:maxContracts:<accountId>` (matched by account UUID, falling
+   * back to the broker login/ref). Undefined when unset/<=0 — no cap. Read by
+   * the terminal's cap badge (see TradingTerminal.tsx).
+   */
+  maxContracts?: number;
   capabilities: BrokerCapabilities;
 }
 

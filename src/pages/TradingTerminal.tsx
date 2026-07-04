@@ -153,9 +153,10 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     const ordersEnabled = resolveOrdersEnabled(base, capabilities);
     return ordersEnabled === base.ordersEnabled ? base : { ...base, ordersEnabled };
   }, [terminalMode, capabilities]);
-  // Apex `autotrading:maxContracts:<id>` cap. Not yet exposed on the accounts
-  // DTO (see report/spec) — read defensively so it lights up if the backend
-  // ever adds it; `null` today, so the clamp is inert.
+  // Apex `autotrading:maxContracts:<id>` cap, now stamped on each account by
+  // execution-api's listAccounts (query.service.ts#getMaxContractsMap). Read
+  // defensively like the other resolvedAccount fields above; `null` when the
+  // account has no cap configured.
   const maxContracts = (resolvedAccount as { maxContracts?: number | null } | null)?.maxContracts ?? null;
 
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
