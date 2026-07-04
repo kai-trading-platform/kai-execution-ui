@@ -52,6 +52,12 @@ export interface PlaceTradingOrderPayload {
   volume: number;
   stopLoss: number;
   takeProfit: number;
+  /**
+   * Reference/entry price (absolute) a market order will approximately fill at
+   * (BUY→ask, SELL→bid). Rithmic futures needs it to convert absolute SL/TP into
+   * the tick-distance bracket the bridge expects; MT5 ignores it.
+   */
+  entry?: number;
   comment?: string | null;
   magic?: number | null;
   dryRun?: boolean;

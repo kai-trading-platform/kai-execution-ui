@@ -30,6 +30,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 const USE_CHART_PRO = import.meta.env.VITE_CHART_PRO !== "false";
 import type { CopyTradingPosition } from "@/modules/copyTrading/types";
 import { toUiPosition } from "@/lib/positionMapping";
+import { resolveOrderEntryPrice } from "@/lib/orderEntryPrice";
 import { formatSymbolDisplay, compareSymbols, symbolIcon } from "@/lib/symbolDisplay";
 import { useMarketCandles } from "@/modules/copyTrading/hooks/useMarketCandles";
 import { toast } from "@/components/ui/sonner";
@@ -485,6 +486,15 @@ export default function TradingTerminalPage() {
       }
       // The execution backend only supports market orders; the order-type
       // selector is informational and Market is the only enabled option.
+      // `entry` is the approximate fill price (BUY→ask, SELL→bid): the Rithmic
+      // futures bridge needs it to turn absolute SL/TP into its tick-distance
+      // bracket (GATE 2). MT5 ignores it, so it's attached for every provider.
+      const entry = resolveOrderEntryPrice({
+        side,
+        bid: bidPrice,
+        ask: askPrice,
+        fallback: fallbackPrice,
+      });
       try {
         await placeOrder.mutateAsync({
           tradingAccountId: dbAccountId,
@@ -494,6 +504,7 @@ export default function TradingTerminalPage() {
           volume: lots,
           takeProfit: takeProfitEnabled && tpNum > 0 ? tpNum : 0,
           stopLoss: stopLossEnabled && slNum > 0 ? slNum : 0,
+          entry: entry > 0 ? entry : undefined,
           confirmationText: REAL_CONFIRMATION_TEXT,
         });
         toast.success(
@@ -503,7 +514,7 @@ export default function TradingTerminalPage() {
         toast.error(errorMessage(e, "No se pudo ejecutar la orden"));
       }
     },
-    [confirm, dbAccountId, selectedSymbol, bidPrice, placeOrder, volume, takeProfitEnabled, tpNum, stopLossEnabled, slNum, orderMode, strategy.ordersEnabled],
+    [confirm, dbAccountId, selectedSymbol, bidPrice, askPrice, fallbackPrice, placeOrder, volume, takeProfitEnabled, tpNum, stopLossEnabled, slNum, orderMode, strategy.ordersEnabled],
   );
 
   const handleClosePosition = useCallback(
