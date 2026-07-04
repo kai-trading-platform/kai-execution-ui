@@ -35,6 +35,15 @@ import { useMarketCandles } from "@/modules/copyTrading/hooks/useMarketCandles";
 import { toast } from "@/components/ui/sonner";
 import { useConfirm } from "@/components/ConfirmDialogProvider";
 import { REAL_CONFIRMATION_TEXT } from "@/constants/tradingExecution";
+import {
+  modeForProvider,
+  strategyForMode,
+  clampToMaxContracts,
+  estimateFuturesRisk,
+  type TerminalMode,
+  type TerminalStrategy,
+  type FuturesTickSpec,
+} from "@/lib/terminalMode";
 
 /** API contract: the execution backend only accepts market orders today. */
 type TradingOrderSide = "buy" | "sell";
@@ -92,6 +101,18 @@ export default function TradingTerminalPage() {
   const { data: positions = EMPTY_LIST, isLoading: positionsLoading } = useTradingPositions(dbAccountId);
   const { symbols, groupedSymbols, loading: symbolsLoading } = useAccountSymbols(dbAccountId);
 
+  // Terminal mode is derived from the selected account's provider (spec §4.2):
+  // MT5 → CFD (lotes), Rithmic → Futuros (contratos). The strategy drives the
+  // order ticket's units, stepping, default volume, sizing and whether orders
+  // can be placed. CFD reproduces the historical behaviour byte-for-byte.
+  const provider = (resolvedAccount as { provider?: string | null } | null)?.provider ?? null;
+  const terminalMode: TerminalMode = modeForProvider(provider);
+  const strategy = useMemo(() => strategyForMode(terminalMode), [terminalMode]);
+  // Apex `autotrading:maxContracts:<id>` cap. Not yet exposed on the accounts
+  // DTO (see report/spec) — read defensively so it lights up if the backend
+  // ever adds it; `null` today, so the clamp is inert.
+  const maxContracts = (resolvedAccount as { maxContracts?: number | null } | null)?.maxContracts ?? null;
+
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
   const [categoryFilter, setCategoryFilter] = useState<string>("TODO");
   const [orderType, setOrderType] = useState<OrderType>("MERCADO");
@@ -111,6 +132,13 @@ export default function TradingTerminalPage() {
     }
   }, []);
   const [volume, setVolume] = useState<string>("0.10");
+  // When the terminal mode flips (account switched between MT5 ⇄ Rithmic) reset
+  // the volume to that mode's default unit. For MT5 this sets "0.10" (identical
+  // to the initial state → no visible change); for futures it sets "1" contract.
+  useEffect(() => {
+    setVolume(strategy.defaultVolume);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [terminalMode]);
   const [takeProfitEnabled, setTakeProfitEnabled] = useState<boolean>(false);
   const [stopLossEnabled, setStopLossEnabled] = useState<boolean>(false);
   const [takeProfitPrice, setTakeProfitPrice] = useState<string>("");
@@ -391,6 +419,17 @@ export default function TradingTerminalPage() {
   const spread = selectedTick && selectedTick.bid > 0 && selectedTick.ask > 0 ? selectedTick.ask - selectedTick.bid : 0;
   const notional = (parseFloat(volume) || 0) * bidPrice;
 
+  // Contract spec for the selected futures symbol (tick size/value) — sourced
+  // from the `/symbols` payload (AccountSymbol.tick_size / tick_value). Only
+  // meaningful in futures mode; null otherwise so the ticket falls back to CFD.
+  const tickSpec = useMemo<FuturesTickSpec | null>(() => {
+    if (terminalMode !== "futures" || !selectedSymbol) return null;
+    const sym = symbols.find((s) => s.name === selectedSymbol);
+    if (!sym) return null;
+    if (!(sym.tick_size > 0) || !(sym.tick_value > 0)) return null;
+    return { tickSize: sym.tick_size, tickValue: sym.tick_value };
+  }, [terminalMode, selectedSymbol, symbols]);
+
   const tpNum = parseFloat(takeProfitPrice) || 0;
   const slNum = parseFloat(stopLossPrice) || 0;
   const risk = slNum > 0 ? Math.abs(lastPrice - slNum) * (parseFloat(volume) || 0) : 0;
@@ -414,6 +453,11 @@ export default function TradingTerminalPage() {
 
   const handlePlaceOrder = useCallback(
     async (side: TradingOrderSide) => {
+      // Phase 4: futures order placement is intentionally not wired (Phase 5,
+      // money-critical). The BUY/SELL buttons are disabled for Rithmic accounts;
+      // this guard is defence-in-depth so we never hit the backend "not
+      // supported" path.
+      if (!strategy.ordersEnabled) return;
       if (!dbAccountId || !selectedSymbol || bidPrice <= 0) return;
       const lots = parseFloat(volume) || 0;
       // One-click mode fires immediately without the confirmation dialog (Exness
@@ -447,7 +491,7 @@ export default function TradingTerminalPage() {
         toast.error(errorMessage(e, "No se pudo ejecutar la orden"));
       }
     },
-    [confirm, dbAccountId, selectedSymbol, bidPrice, placeOrder, volume, takeProfitEnabled, tpNum, stopLossEnabled, slNum, orderMode],
+    [confirm, dbAccountId, selectedSymbol, bidPrice, placeOrder, volume, takeProfitEnabled, tpNum, stopLossEnabled, slNum, orderMode, strategy.ordersEnabled],
   );
 
   const handleClosePosition = useCallback(
@@ -800,6 +844,9 @@ export default function TradingTerminalPage() {
             setOrderMode={setOrderMode}
             capital={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
             autoTpSl={settings.autoTpSl}
+            strategy={strategy}
+            tickSpec={tickSpec}
+            maxContracts={maxContracts}
           />
         </aside>
 
@@ -838,6 +885,9 @@ export default function TradingTerminalPage() {
               setOrderMode={setOrderMode}
               capital={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
               autoTpSl={settings.autoTpSl}
+              strategy={strategy}
+              tickSpec={tickSpec}
+              maxContracts={maxContracts}
             />
           </div>
         )}
@@ -1616,6 +1666,9 @@ function TradePanel({
   setOrderMode,
   capital,
   autoTpSl,
+  strategy,
+  tickSpec,
+  maxContracts,
 }: {
   bidPrice: number;
   askPrice: number;
@@ -1643,11 +1696,16 @@ function TradePanel({
   setOrderMode: (m: OrderMode) => void;
   capital: number | null;
   autoTpSl: boolean;
+  strategy: TerminalStrategy;
+  tickSpec: FuturesTickSpec | null;
+  maxContracts: number | null;
 }) {
   const ratio = reward > 0 && risk > 0 ? `1 : ${(reward / risk).toFixed(2)}` : "—";
   const hasData = bidPrice > 0;
   const isOneClick = orderMode === "oneClick";
   const isRisk = orderMode === "risk";
+  const isFutures = strategy.mode === "futures";
+  const ordersEnabled = strategy.ordersEnabled;
   // Risk-calc mode: user picks a % of capital to risk + an SL price; we derive
   // the lot size from the same model the risk readout uses (risk = |price−SL| ×
   // lots), so the displayed Riesgo stays consistent. Setting the volume feeds
@@ -1655,11 +1713,17 @@ function TradePanel({
   const [riskPct, setRiskPct] = useState<string>("1");
   const slDist = isRisk && parseFloat(stopLossPrice) > 0 ? Math.abs(lastPrice - parseFloat(stopLossPrice)) : 0;
   const riskUsd = capital != null && parseFloat(riskPct) > 0 ? capital * (parseFloat(riskPct) / 100) : 0;
-  const computedLots = slDist > 0 && riskUsd > 0 ? Math.max(0.01, Number((riskUsd / slDist).toFixed(2))) : 0;
+  // Mode-aware sizing: CFD reproduces the naive `riskUsd/slDist` lots exactly;
+  // futures returns integer contracts via `floor(riskUsd/(slTicks×tickValue))`,
+  // then clamps to the Apex maxContracts cap when it is known.
+  const rawComputedSize = slDist > 0 && riskUsd > 0 ? strategy.computeSize(riskUsd, slDist, tickSpec) : 0;
+  const computedSize = isFutures ? clampToMaxContracts(rawComputedSize, maxContracts) : rawComputedSize;
+  // Estimated USD risk for the (integer, capped) futures size shown in preview.
+  const estRisk = isFutures ? estimateFuturesRisk(computedSize, slDist, tickSpec) : riskUsd;
   useEffect(() => {
-    if (isRisk && computedLots > 0) setVolume(computedLots.toFixed(2));
+    if (isRisk && computedSize > 0) setVolume(strategy.formatVolume(computedSize));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRisk, computedLots]);
+  }, [isRisk, computedSize]);
   // Sub-unit instruments (FX/metals) need 5 decimals; large ones (BTC/indices) 2.
   const priceDec = bidPrice > 0 && bidPrice < 20 ? 5 : 2;
   // One "pip" step per instrument class so the +/- presets are sensible:
@@ -1751,20 +1815,22 @@ function TradePanel({
               <Input value={stopLossPrice} onChange={(e) => setStopLossPrice(e.target.value)} disabled={!hasData} placeholder={hasData ? "Define el SL para calcular" : "Sin precio"} className="h-9 bg-white/5 border-white/10 text-white tabular-nums" />
             </div>
             <div className="flex items-center justify-between text-[11px] pt-0.5">
-              <span className="text-white/50">Riesgo ≈ <span className="text-[#ef5350] font-semibold tabular-nums">{riskUsd > 0 ? `$${riskUsd.toFixed(2)}` : "—"}</span></span>
-              <span className="text-white/50">Lotes ≈ <span className="text-white font-semibold tabular-nums">{computedLots > 0 ? computedLots.toFixed(2) : "—"}</span></span>
+              <span className="text-white/50">Riesgo ≈ <span className="text-[#ef5350] font-semibold tabular-nums">{estRisk > 0 ? `$${estRisk.toFixed(2)}` : "—"}</span></span>
+              <span className="text-white/50">{strategy.unitLabel} ≈ <span className="text-white font-semibold tabular-nums">{computedSize > 0 ? strategy.formatVolume(computedSize) : "—"}</span></span>
             </div>
           </div>
         )}
         <div>
-          <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1.5">Volumen (Lotes){isRisk && " · calculado"}</div>
+          <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1.5">Volumen ({strategy.unitLabel}){isRisk && " · calculado"}</div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" disabled={isRisk} className="h-9 w-9 bg-white/5 border-white/10 text-white hover:bg-white/10 disabled:opacity-30" onClick={() => setVolume(Math.max(0.01, parseFloat(volume) - 0.01).toFixed(2))}>−</Button>
+            <Button variant="outline" size="sm" disabled={isRisk} className="h-9 w-9 bg-white/5 border-white/10 text-white hover:bg-white/10 disabled:opacity-30" onClick={() => setVolume(strategy.formatVolume(Math.max(strategy.minVolume, parseFloat(volume) - strategy.volumeStep)))}>−</Button>
             <Input value={volume} readOnly={isRisk} onChange={(e) => setVolume(e.target.value)} className="h-9 text-center bg-white/5 border-white/10 text-white" />
-            <Button variant="outline" size="sm" disabled={isRisk} className="h-9 w-9 bg-white/5 border-white/10 text-white hover:bg-white/10 disabled:opacity-30" onClick={() => setVolume((parseFloat(volume) + 0.01).toFixed(2))}>+</Button>
+            <Button variant="outline" size="sm" disabled={isRisk} className="h-9 w-9 bg-white/5 border-white/10 text-white hover:bg-white/10 disabled:opacity-30" onClick={() => setVolume(strategy.formatVolume(parseFloat(volume) + strategy.volumeStep))}>+</Button>
           </div>
           <div className="text-[11px] text-white/50 mt-1 tabular-nums">
-            {hasData ? `≈ $${notional.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Sin precio disponible"}
+            {isFutures
+              ? `${parseInt(volume || "0", 10) || 0} contrato(s)${maxContracts != null && maxContracts > 0 ? ` · máx ${maxContracts} (Apex)` : ""}`
+              : hasData ? `≈ $${notional.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Sin precio disponible"}
           </div>
         </div>
         {!isOneClick && (
@@ -1854,26 +1920,28 @@ function TradePanel({
       </div>
       <div className="grid grid-cols-2 gap-2 p-3 border-t border-white/10 shrink-0">
         <Button
-          disabled={!hasData || submitting || (isRisk && computedLots <= 0)}
+          disabled={!ordersEnabled || !hasData || submitting || (isRisk && computedSize <= 0)}
           onClick={() => onSubmit("sell")}
           className="h-12 bg-[#e0413d] hover:bg-[#ef5350] text-white font-bold text-sm tracking-wide disabled:opacity-40"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "VENDER"}
         </Button>
         <Button
-          disabled={!hasData || submitting || (isRisk && computedLots <= 0)}
+          disabled={!ordersEnabled || !hasData || submitting || (isRisk && computedSize <= 0)}
           onClick={() => onSubmit("buy")}
           className="h-12 bg-[#1aa86a] hover:bg-[#1fbd78] text-white font-bold text-sm tracking-wide disabled:opacity-40"
         >
           {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : "COMPRAR"}
         </Button>
       </div>
-      <div className={cn("text-[10px] text-center py-1.5 border-t border-white/10 shrink-0", isOneClick ? "text-[#e3b341]" : "text-white/40")}>
-        {isOneClick
-          ? "Un clic · ejecución SIN confirmación"
-          : isRisk
-            ? "Lotes calculados por riesgo · se pedirá confirmación"
-            : "Orden de mercado · Ejecución inmediata"}
+      <div className={cn("text-[10px] text-center py-1.5 border-t border-white/10 shrink-0", !ordersEnabled ? "text-[#e3b341]" : isOneClick ? "text-[#e3b341]" : "text-white/40")}>
+        {!ordersEnabled
+          ? "Órdenes de futuros: próximamente · solo vista previa de tamaño"
+          : isOneClick
+            ? "Un clic · ejecución SIN confirmación"
+            : isRisk
+              ? "Lotes calculados por riesgo · se pedirá confirmación"
+              : "Orden de mercado · Ejecución inmediata"}
       </div>
     </div>
   );
