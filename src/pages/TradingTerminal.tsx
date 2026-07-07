@@ -25,6 +25,7 @@ import { useReversePosition } from "@/hooks/useReversePosition";
 import { useUpdateTradingPositionStops } from "@/hooks/useUpdateTradingPositionStops";
 import { KaiChart } from "@/components/KaiChart";
 import { KaiChartPro } from "@/components/KaiChartPro";
+import { FavTimeframeBar } from "@/components/FavTimeframeBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 // Migración de chart a @klinecharts/pro (suite ampliada de drawing tools +
@@ -56,6 +57,13 @@ type TradingOrderSide = "buy" | "sell";
 
 // Max symbols to stream live in the watchlist at once (see effect below for why).
 const WATCHLIST_LIVE_CAP = 20;
+
+// Default instrument when nothing is selected/persisted for the account: pick
+// MNQ when the catalog has it (sim/futures accounts expose the CME roots, and
+// the alphabetical first would be ES), otherwise fall back to the
+// liquidity-sorted first symbol as before. Matched by raw name AND display so
+// both plain roots ("MNQ") and broker variants that render as "MNQ" qualify.
+const PREFERRED_DEFAULT_SYMBOL = "MNQ";
 
 // Stable empty fallback so query destructures don't mint a NEW [] on every
 // render while data is loading (unstable identities cascade into effects and
@@ -133,7 +141,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
 
   const dbAccountId = (resolvedAccount as { id?: string } | null)?.id ?? null;
   const { data: positions = EMPTY_LIST, isLoading: positionsLoading } = useTradingPositions(dbAccountId);
-  const { symbols, groupedSymbols, loading: symbolsLoading } = useAccountSymbols(dbAccountId);
+  const { symbols, groupedSymbols, loading: symbolsLoading, loadedForAccountId } = useAccountSymbols(dbAccountId);
 
   // Terminal mode is derived from the selected account's provider (spec §4.2):
   // MT5 → CFD (lotes), Rithmic → Futuros (contratos). The strategy drives the
@@ -193,7 +201,21 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const [takeProfitPrice, setTakeProfitPrice] = useState<string>("");
   const [stopLossPrice, setStopLossPrice] = useState<string>("");
   const [bottomTab, setBottomTab] = useState<BottomTab>("POSICIONES");
-  const [bottomOpen, setBottomOpen] = useState<boolean>(true);
+  // En móvil el panel inferior arranca CERRADO para que el chart use todo el
+  // alto (si no, aplasta el chart a una franja). El tab "Posiciones" lo abre.
+  const [bottomOpen, setBottomOpen] = useState<boolean>(
+    () => (typeof window === "undefined" ? true : window.innerWidth >= 768),
+  );
+
+  // Al abrir/cerrar el panel inferior (CUENTAS/POSICIONES/…) el área del chart
+  // cambia de alto. El chart Pro (klinecharts) solo se reajusta con
+  // window.resize (el fork lo escucha → widget.resize()), así que lo disparamos
+  // tras el reflow para que el eje X no quede recortado bajo el panel.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
+    return () => cancelAnimationFrame(id);
+  }, [bottomOpen]);
+
   const [closeAllOpen, setCloseAllOpen] = useState<boolean>(false);
   const [closingBatch, setClosingBatch] = useState<boolean>(false);
   const [alertsOpen, setAlertsOpen] = useState<boolean>(false);
@@ -422,18 +444,48 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     return symbolList.filter((s) => categoryFilter === "TODO" || s.category === categoryFilter);
   }, [symbolList, categoryFilter]);
 
+  // The catalog is only trustworthy for validation/defaults once it was
+  // fetched for THIS account: while switching accounts the hook still holds
+  // the previous account's symbols (see useAccountSymbols.loadedForAccountId).
+  const catalogReady =
+    !symbolsLoading && loadedForAccountId != null && loadedForAccountId === dbAccountId && symbols.length > 0;
+  const validSymbolNames = useMemo(() => new Set(symbols.map((s) => s.name)), [symbols]);
+
+  // When the active account's catalog is in, drop any symbol dragged over
+  // from a previously-viewed account (e.g. BTCUSDm lingering on a sim-futures
+  // account whose catalog is only the 8 CME roots): prune stale tabs and clear
+  // the selection so the default-pick effect below re-selects from THIS
+  // catalog. Valid persisted tabs are untouched (MT5/Rithmic flow unchanged).
+  useEffect(() => {
+    if (!catalogReady) return;
+    setOpenSymbols((prev) => {
+      const next = prev.filter((s) => validSymbolNames.has(s));
+      return next.length === prev.length ? prev : next;
+    });
+    setSelectedSymbol((cur) => (cur && !validSymbolNames.has(cur) ? "" : cur));
+  }, [catalogReady, validSymbolNames]);
+
   useEffect(() => {
     if (selectedSymbol) return;
     if (openSymbols.length > 0) {
       setSelectedSymbol(openSymbols[0]);
       return;
     }
+    // Default pick comes from the catalog, so wait until it belongs to the
+    // active account — otherwise an account switch could stamp the previous
+    // account's first symbol into this account's tabs (and localStorage).
+    if (!catalogReady) return;
     if (filteredSymbols.length > 0) {
-      const first = filteredSymbols[0].name;
+      // Prefer MNQ when the account offers it (sim/futures catalogs); fall
+      // back to the liquidity-sorted first symbol exactly as before.
+      const preferred = filteredSymbols.find(
+        (s) => s.name === PREFERRED_DEFAULT_SYMBOL || s.display === PREFERRED_DEFAULT_SYMBOL,
+      );
+      const first = (preferred ?? filteredSymbols[0]).name;
       setSelectedSymbol(first);
       setOpenSymbols([first]);
     }
-  }, [filteredSymbols, selectedSymbol, openSymbols]);
+  }, [filteredSymbols, selectedSymbol, openSymbols, catalogReady]);
 
   // Live-price the watchlist for only a bounded set of symbols. The backend
   // polls every subscribed symbol against a single (serial) MT5 terminal every
@@ -890,6 +942,9 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         )}
 
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {USE_CHART_PRO && (
+            <FavTimeframeBar timeframe={timeframe} onSelect={setTimeframe} />
+          )}
           <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
             {USE_CHART_PRO ? (
               <ErrorBoundary
@@ -931,41 +986,23 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
               />
             )}
 
-            {/* A4 — chart overlays. Container ignores pointer events; only the
-                interactive controls opt back in so the chart stays draggable. */}
+            {/* A4 — chart overlays. Anchored to the BOTTOM of the chart body so
+                controls never collide with the fork header (38px period-bar on
+                top, 52px drawing-bar on the left) or the OHLC/indicator legend.
+                Container ignores pointer events; only the interactive controls
+                opt back in so the chart stays draggable. */}
             <div className="pointer-events-none absolute inset-0 z-20">
-              {selectedSymbol && (
-                <div className="absolute top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 rounded-full border border-white/10 bg-[#0d0f16]/90 px-3 py-1 text-[10px] font-semibold uppercase tracking-wider backdrop-blur">
-                  <span className="text-[#2f6bff]">Quick Trade</span>
-                  <span className="text-white/50">{formatSymbolDisplay(selectedSymbol)}</span>
-                </div>
-              )}
-              <button
-                onClick={() => setTradeArrows((v) => !v)}
-                className="pointer-events-auto absolute top-2 left-2 rounded-md border border-white/10 bg-[#0d0f16]/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/70 hover:bg-white/10 backdrop-blur transition-colors"
-                title="Mostrar flechas de operaciones en el gráfico"
-              >
-                Trade Arrows: <span className={tradeArrows ? "text-[#2ed68d]" : "text-white/40"}>{tradeArrows ? "ON" : "OFF"}</span>
-              </button>
-              {strategy.ordersEnabled && bidPrice > 0 && (
-                <div className="pointer-events-auto absolute bottom-3 right-3 flex items-center gap-1.5 rounded-lg border border-white/10 bg-[#0d0f16]/90 p-1.5 backdrop-blur">
-                  <button
-                    onClick={() => handlePlaceOrder("sell")}
-                    disabled={placeOrder.isPending}
-                    className="flex flex-col items-center rounded-md bg-[#e0413d] hover:bg-[#ef5350] px-3 py-1.5 text-white disabled:opacity-40 transition-colors"
-                  >
-                    <span className="text-[10px] font-bold leading-none">SELL</span>
-                    <span className="text-[11px] tabular-nums leading-tight mt-0.5">{bidPrice.toFixed(bidPrice > 0 && bidPrice < 20 ? 5 : 2)}</span>
-                  </button>
-                  <button
-                    onClick={() => handlePlaceOrder("buy")}
-                    disabled={placeOrder.isPending}
-                    className="flex flex-col items-center rounded-md bg-[#1aa86a] hover:bg-[#1fbd78] px-3 py-1.5 text-white disabled:opacity-40 transition-colors"
-                  >
-                    <span className="text-[10px] font-bold leading-none">BUY</span>
-                    <span className="text-[11px] tabular-nums leading-tight mt-0.5">{askPrice.toFixed(askPrice > 0 && askPrice < 20 ? 5 : 2)}</span>
-                  </button>
-                </div>
+              {/* Toda la capa de trade in-chart (arrows + BUY/SELL) es diseño de
+                  FUTUROS; el chart CFD/forex queda limpio (se opera desde el
+                  panel derecho VENDER/COMPRAR). */}
+              {strategy.mode === "futures" && (
+                <button
+                  onClick={() => setTradeArrows((v) => !v)}
+                  className="pointer-events-auto absolute bottom-8 left-[60px] rounded-md border border-white/10 bg-[#0d0f16]/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/70 hover:bg-white/10 backdrop-blur transition-colors"
+                  title="Mostrar flechas de operaciones en el gráfico"
+                >
+                  Trade Arrows: <span className={tradeArrows ? "text-[#2ed68d]" : "text-white/40"}>{tradeArrows ? "ON" : "OFF"}</span>
+                </button>
               )}
             </div>
           </div>
@@ -1272,15 +1309,20 @@ function TopHeader({
         </div>
       </div>
 
-      <MarketTabs
-        openSymbols={openSymbols}
-        selected={selectedSymbol}
-        onSelect={onSelectTab}
-        onClose={onCloseTab}
-        onAdd={onAddTab}
-        symbolList={symbolList}
-        getPrice={getPrice}
-      />
+      {/* En móvil las pestañas de símbolos se ocultan (los símbolos se cambian
+          desde el bottom-nav "Símbolos"); así el header queda en una sola fila
+          compacta. */}
+      <div className="hidden md:flex min-w-0 flex-1">
+        <MarketTabs
+          openSymbols={openSymbols}
+          selected={selectedSymbol}
+          onSelect={onSelectTab}
+          onClose={onCloseTab}
+          onAdd={onAddTab}
+          symbolList={symbolList}
+          getPrice={getPrice}
+        />
+      </div>
 
       <div className="flex items-center gap-2 sm:gap-3 shrink-0">
         <div className="hidden md:flex items-stretch gap-4 lg:gap-5 mr-2 pr-3 border-r border-white/8">
