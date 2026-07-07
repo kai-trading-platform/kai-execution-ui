@@ -55,7 +55,8 @@ export interface TerminalStrategy {
 }
 
 export function modeForProvider(provider: TerminalProvider): TerminalMode {
-  return provider === "rithmic" ? "futures" : "cfd";
+  // Sim (fondeo emulado) opera futuros de Yahoo (MNQ, ES…): contratos, no lotes.
+  return provider === "rithmic" || provider === "sim" ? "futures" : "cfd";
 }
 
 // --- CFD (MT5) --------------------------------------------------------------
