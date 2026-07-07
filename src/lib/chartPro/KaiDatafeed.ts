@@ -54,7 +54,19 @@ export class KaiDatafeed implements Datafeed {
     const accountId = this.deps.getAccountId();
     if (!accountId || !symbol?.ticker) return [];
 
-    const candles = await fetchCandles(accountId, symbol.ticker, period.text, HISTORY_COUNT);
+    // Un blip de red al cargar hacía que fetchCandles fallara/volviera vacío →
+    // el fork llama applyNewData([], false) y el chart queda con 1 sola vela.
+    // Reintentamos con backoff para que un corte transitorio no vacíe el chart.
+    let candles: Awaited<ReturnType<typeof fetchCandles>> = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        candles = await fetchCandles(accountId, symbol.ticker, period.text, HISTORY_COUNT);
+      } catch {
+        candles = [];
+      }
+      if (candles.length > 0) break;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+    }
     const data: KLineData[] = candles.map((c) => ({
       timestamp: c.time,
       open: c.open,

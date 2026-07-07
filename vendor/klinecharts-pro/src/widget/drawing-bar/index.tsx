@@ -12,7 +12,7 @@
  * limitations under the License.
  */
 
-import { Component, createMemo, createSignal } from 'solid-js'
+import { Component, createMemo, createSignal, onCleanup } from 'solid-js'
 
 import { OverlayCreate, OverlayMode } from 'klinecharts'
 
@@ -20,6 +20,7 @@ import { List } from '../../component'
 import {
   createSingleLineOptions, createMoreLineOptions,
   createPolygonOptions, createFibonacciOptions, createWaveOptions,
+  createPositionOptions,
   createMagnetOptions,
   Icon
 } from './icons'
@@ -42,6 +43,7 @@ const DrawingBar: Component<DrawingBarProps> = props => {
   const [polygonIcon, setPolygonIcon] = createSignal('circle')
   const [fibonacciIcon, setFibonacciIcon] = createSignal('fibonacciLine')
   const [waveIcon, setWaveIcon] = createSignal('xabcd')
+  const [positionIcon, setPositionIcon] = createSignal('positionLong')
 
   const [modeIcon, setModeIcon] = createSignal('weak_magnet')
   const [mode, setMode] = createSignal('normal')
@@ -52,13 +54,34 @@ const DrawingBar: Component<DrawingBarProps> = props => {
 
   const [popoverKey, setPopoverKey] = createSignal('')
 
+  // Fork Kai: herramientas favoritas (⭐). Compartidas con la barra flotante de
+  // React vía localStorage + el evento window 'kai:favtools'.
+  const FAVTOOLS_KEY = 'kai.chart.favTools'
+  const readFavTools = (): string[] => {
+    try { const r = localStorage.getItem(FAVTOOLS_KEY); const a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : [] } catch { return [] }
+  }
+  const [favTools, setFavTools] = createSignal<string[]>(readFavTools())
+  const toggleFavTool = (name: string) => {
+    const cur = readFavTools()
+    const next = cur.includes(name) ? cur.filter(t => t !== name) : [...cur, name]
+    try { localStorage.setItem(FAVTOOLS_KEY, JSON.stringify(next)) } catch { /* noop */ }
+    setFavTools(next)
+    window.dispatchEvent(new Event('kai:favtools'))
+  }
+  if (typeof window !== 'undefined') {
+    const onEvt = () => setFavTools(readFavTools())
+    window.addEventListener('kai:favtools', onEvt)
+    onCleanup(() => window.removeEventListener('kai:favtools', onEvt))
+  }
+
   const overlays = createMemo(() => {
     return [
       { key: 'singleLine', icon: singleLineIcon(), list: createSingleLineOptions(props.locale), setter: setSingleLineIcon },
       { key: 'moreLine', icon: moreLineIcon(), list: createMoreLineOptions(props.locale), setter: setMoreLineIcon },
       { key: 'polygon', icon: polygonIcon(), list: createPolygonOptions(props.locale), setter: setPolygonIcon },
       { key: 'fibonacci', icon: fibonacciIcon(), list: createFibonacciOptions(props.locale), setter: setFibonacciIcon },
-      { key: 'wave', icon: waveIcon(), list: createWaveOptions(props.locale), setter: setWaveIcon }
+      { key: 'wave', icon: waveIcon(), list: createWaveOptions(props.locale), setter: setWaveIcon },
+      { key: 'position', icon: positionIcon(), list: createPositionOptions(props.locale), setter: setPositionIcon }
     ]
   })
 
@@ -99,6 +122,7 @@ const DrawingBar: Component<DrawingBarProps> = props => {
                   {
                     item.list.map(data => (
                       <li
+                        style="display:flex;align-items:center"
                         onClick={() => {
                           item.setter(data.key)
                           // Fork Kai: incluir groupId/visible como el icono principal
@@ -108,7 +132,14 @@ const DrawingBar: Component<DrawingBarProps> = props => {
                           setPopoverKey('')
                         }}>
                         <Icon name={data.key}/>
-                        <span style="padding-left:8px">{data.text}</span>
+                        <span style="padding-left:8px;flex:1">{data.text}</span>
+                        {/* Fork Kai: estrella para favoritear la herramienta (barra flotante). */}
+                        <span
+                          title="Favorito"
+                          style={`padding:0 6px;cursor:pointer;font-size:14px;color:${favTools().includes(data.key) ? '#f6c945' : 'rgba(255,255,255,0.35)'}`}
+                          onClick={(e) => { e.stopPropagation(); toggleFavTool(data.key) }}>
+                          {favTools().includes(data.key) ? '★' : '☆'}
+                        </span>
                       </li>
                     ))
                   }

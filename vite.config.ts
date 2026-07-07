@@ -33,6 +33,15 @@ export default defineConfig(() => {
       allowedHosts: [".scyra.dev", "localhost", "127.0.0.1"],
       proxy: proxyConfig,
     },
+    // PRODUCCIÓN: se sirve con `vite preview` (build estático, sin HMR ni
+    // re-optimización de deps → sin el problema de módulos "stale"). Reusa el
+    // MISMO proxy que el dev server para /api, /api/trading y /socket.io.
+    preview: {
+      host: "::",
+      port: 5174,
+      allowedHosts: [".scyra.dev", "localhost", "127.0.0.1"],
+      proxy: proxyConfig,
+    },
     build: {
       outDir: "dist",
       sourcemap: false,

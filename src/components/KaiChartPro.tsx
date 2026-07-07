@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { LineType } from 'klinecharts';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { LineType, TooltipShowRule } from 'klinecharts';
 import type { Overlay, OverlayCreate } from 'klinecharts';
 import { KLineChartPro } from '@klinecharts/pro';
 import type { SymbolInfo, Period } from '@klinecharts/pro';
@@ -10,8 +10,11 @@ import { useAccountSymbols } from '@/hooks/useAccountSymbols';
 import { useMarketSocket } from '@/contexts/MarketSocketContext';
 import { formatSymbolDisplay } from '@/lib/symbolDisplay';
 import { KaiDatafeed } from '@/lib/chartPro/KaiDatafeed';
-import { CHART_PRO_PERIODS, periodForTimeframe } from '@/lib/chartPro/periods';
+import { CHART_PRO_PERIODS, periodForTimeframe, timeframeFromKeyInput } from '@/lib/chartPro/periods';
 import { useChartDrawings, type SavedDrawing } from '@/hooks/useChartDrawings';
+import { FloatingToolbar } from '@/components/FloatingToolbar';
+import { MobileDrawTools } from '@/components/MobileDrawTools';
+import { TimeframeInputModal } from '@/components/TimeframeInputModal';
 
 /**
  * klinecharts espera una IANA válida ("America/New_York"). Nuestro setting usa el
@@ -70,7 +73,7 @@ export function KaiChartPro({
   const datafeedRef = useRef<KaiDatafeed | null>(null);
 
   const { symbols: accountSymbols } = useAccountSymbols(accountId ?? undefined);
-  const { ticks, subscribe, unsubscribe } = useMarketSocket();
+  const { ticks, subscribe, unsubscribe, isConnected } = useMarketSocket();
   const { getDrawings, saveDrawing, removeDrawing } = useChartDrawings();
 
   // AccountSymbol[] → SymbolInfo[], deduplicado por display (misma lógica que la
@@ -140,13 +143,26 @@ export function KaiChartPro({
   // Persistencia central: toda alta/movimiento/borrado de un overlay de dibujo
   // pasa por aquí (tanto los creados desde la DrawingBar nativa vía onOverlayEvent
   // del fork, como los rehidratados que llevan sus propios callbacks).
+  // Pila de dibujos en orden de creación → Ctrl+Z deshace el último.
+  const drawnIdsRef = useRef<string[]>([]);
+
+  // Buffer visible del modal "Cambiar Intervalo" (lo que el usuario teclea).
+  const [tfInput, setTfInput] = useState<string | null>(null);
+
   const persist = useCallback((type: 'created' | 'updated' | 'removed', overlay: Overlay) => {
     if (rehydratingRef.current) return;
     if (overlay.groupId !== DRAWINGS_GROUP) return;
     const sym = symbolRef.current;
     if (!sym) return;
-    if (type === 'removed') removeDrawingRef.current(sym, overlay.id);
-    else saveDrawingRef.current(sym, overlay);
+    if (type === 'removed') {
+      drawnIdsRef.current = drawnIdsRef.current.filter((id) => id !== overlay.id);
+      removeDrawingRef.current(sym, overlay.id);
+    } else {
+      if (type === 'created' && !drawnIdsRef.current.includes(overlay.id)) {
+        drawnIdsRef.current.push(overlay.id);
+      }
+      saveDrawingRef.current(sym, overlay);
+    }
   }, []);
 
   // SavedDrawing → OverlayCreate re-adjuntando los callbacks de persistencia para
@@ -226,7 +242,9 @@ export function KaiChartPro({
             text: { color: '#ffffff' },
           },
         },
-        tooltip: { text: { color: 'rgba(226,228,233,0.85)' } },
+        // Leyenda OHLC (Time/Open/High/Low/Close/Volume) OCULTA por default;
+        // se reactiva desde Setting ("Datos OHLC"). showRule 'none' = no mostrar.
+        tooltip: { showRule: TooltipShowRule.None, text: { color: 'rgba(226,228,233,0.85)' } },
       },
       xAxis: { axisLine: { color: 'rgba(255,255,255,0.06)' }, tickText: { color: 'rgba(226,228,233,0.55)' }, tickLine: { color: 'rgba(255,255,255,0.06)' } },
       yAxis: { axisLine: { color: 'rgba(255,255,255,0.06)' }, tickText: { color: 'rgba(226,228,233,0.55)' }, tickLine: { color: 'rgba(255,255,255,0.06)' } },
@@ -234,7 +252,8 @@ export function KaiChartPro({
         horizontal: { line: { color: 'rgba(148,163,184,0.4)' }, text: { backgroundColor: '#0d0f16' } },
         vertical: { line: { color: 'rgba(148,163,184,0.4)' }, text: { backgroundColor: '#0d0f16' } },
       },
-      indicator: { tooltip: { text: { color: 'rgba(226,228,233,0.7)' } } },
+      // Leyenda de indicadores (EMA10/20/55/200) también oculta por default.
+      indicator: { tooltip: { showRule: TooltipShowRule.None, text: { color: 'rgba(226,228,233,0.7)' } } },
     });
     const container = containerRef.current;
     return () => {
@@ -265,6 +284,123 @@ export function KaiChartPro({
     if (!chartRef.current) return;
     chartRef.current.setTimezone(resolveTimezone(timezone));
   }, [timezone]);
+
+  // Recarga al RECONECTAR (isConnected false→true): si un corte de red dejó el
+  // chart vacío/con 1 vela, re-fetcheamos el histórico y lo aplicamos. Solo si
+  // el chart está "roto" (pocas velas) para no resetear la vista de un chart sano.
+  const prevConnectedRef = useRef(isConnected);
+  useEffect(() => {
+    const was = prevConnectedRef.current;
+    prevConnectedRef.current = isConnected;
+    if (was || !isConnected) return;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chart = chartRef.current?.getChart?.() as any;
+    const df = datafeedRef.current;
+    if (!chart || !df || !currentSymbolInfo) return;
+    const count = chart.getDataList?.()?.length ?? 0;
+    if (count >= 5) return; // el chart ya tiene historia; no lo tocamos
+    df.getHistoryKLineData(currentSymbolInfo, periodForTimeframe(timeframe))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .then((d: any[]) => { if (d.length > 0) chart.applyNewData(d, true); })
+      .catch(() => { /* noop */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected]);
+
+  // Resize del chart cuando su CONTENEDOR cambia de tamaño (no solo la ventana).
+  // El fork solo escucha `window.resize`; al abrir/cerrar el panel inferior
+  // (CUENTAS/POSICIONES/…) el contenedor se encoge pero el canvas mantenía su
+  // alto viejo y, con overflow-hidden, el eje X (abajo) quedaba recortado.
+  // Un ResizeObserver → getChart().resize() mantiene el eje visible.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => chartRef.current?.getChart()?.resize());
+    });
+    ro.observe(el);
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Atajos de teclado estilo TradingView.
+  useEffect(() => {
+    let tfBuffer = '';
+    let tfTimer = 0;
+    const commitTf = (input: string) => {
+      const tf = timeframeFromKeyInput(input);
+      tfBuffer = '';
+      setTfInput(null);
+      if (tf) onPeriodChangeRef.current?.(tf);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const chart = chartRef.current?.getChart?.() as any;
+      if (!chart) return;
+      const mod = e.ctrlKey || e.metaKey;
+
+      // Ctrl/Cmd+Z → deshacer el último dibujo (uno por uno).
+      if (mod && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        const last = drawnIdsRef.current[drawnIdsRef.current.length - 1];
+        if (last) chart.removeOverlay({ id: last });
+        e.preventDefault();
+        return;
+      }
+
+      // Alt + letra → activar herramienta de dibujo.
+      if (e.altKey) {
+        const tool: Record<string, string> = {
+          t: 'segment', h: 'horizontalStraightLine', v: 'verticalStraightLine',
+          r: 'rayLine', f: 'fibonacciLine',
+        };
+        const name = tool[e.key.toLowerCase()];
+        if (name) {
+          chart.createOverlay({
+            name,
+            groupId: DRAWINGS_GROUP,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            onDrawEnd: (ev: any) => { persist('created', ev.overlay); return false; },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            onPressedMoveEnd: (ev: any) => { persist('updated', ev.overlay); return false; },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            onRemoved: (ev: any) => { persist('removed', ev.overlay); return false; },
+          });
+          e.preventDefault();
+          return;
+        }
+      }
+
+      // Escribir número o D/W/M → cambiar temporalidad (como TradingView).
+      if (!mod && !e.altKey) {
+        if (/^[0-9]$/.test(e.key)) {
+          tfBuffer += e.key;
+          setTfInput(tfBuffer);
+          window.clearTimeout(tfTimer);
+          tfTimer = window.setTimeout(() => commitTf(tfBuffer), 900);
+          e.preventDefault();
+        } else if (/^[dwm]$/i.test(e.key)) {
+          commitTf(e.key);
+          e.preventDefault();
+        } else if (e.key === 'Enter' && tfBuffer) {
+          window.clearTimeout(tfTimer);
+          commitTf(tfBuffer);
+          e.preventDefault();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.clearTimeout(tfTimer);
+      window.removeEventListener('keydown', onKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Puente websocket → chart: cada tick del socket alimenta la vela en curso.
   // El datafeed ignora tickers sin suscripción activa, así que iterar todos es
@@ -324,9 +460,37 @@ export function KaiChartPro({
     }
   }, [positions, symbol, currentSymbolInfo?.ticker, canCreate, showPositions, showTpSl]);
 
+  // Activa una herramienta de dibujo en el chart (usado por la barra flotante de
+  // favoritos y análogo a los atajos Alt+tecla).
+  const activateTool = useCallback((name: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chart = chartRef.current?.getChart?.() as any;
+    if (!chart) return;
+    chart.createOverlay({
+      name,
+      groupId: DRAWINGS_GROUP,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onDrawEnd: (ev: any) => { persist('created', ev.overlay); return false; },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onPressedMoveEnd: (ev: any) => { persist('updated', ev.overlay); return false; },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onRemoved: (ev: any) => { persist('removed', ev.overlay); return false; },
+    });
+  }, [persist]);
+
+  // Borra todos los dibujos del grupo (usado por el bottom sheet móvil).
+  const clearDrawings = useCallback(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chart = chartRef.current?.getChart?.() as any;
+    chart?.removeOverlay({ groupId: DRAWINGS_GROUP });
+  }, []);
+
   return (
     <div className={cn('relative min-h-0 flex-1', className)}>
       <div ref={containerRef} className="absolute inset-0" />
+      <FloatingToolbar onSelectTool={activateTool} />
+      <MobileDrawTools onSelectTool={activateTool} onClearDrawings={clearDrawings} />
+      <TimeframeInputModal input={tfInput} />
     </div>
   );
 }

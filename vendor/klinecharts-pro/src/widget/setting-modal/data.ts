@@ -30,6 +30,23 @@ export function getOptions (locale: string) {
       ]
     },
     {
+      // Fork Kai: leyenda OHLC (Time/Open/High/Low/Close/Volume). Off por
+      // default (ver KaiChartPro setStyles). showRule es enum → onValue/offValue.
+      key: 'candle.tooltip.showRule',
+      text: i18n('ohlc_legend_show', locale),
+      component: 'switch',
+      onValue: 'always',
+      offValue: 'none'
+    },
+    {
+      // Fork Kai: leyenda de indicadores (EMA10/20/55/200).
+      key: 'indicator.tooltip.showRule',
+      text: i18n('indicator_legend_show', locale),
+      component: 'switch',
+      onValue: 'always',
+      offValue: 'none'
+    },
+    {
       key: 'candle.priceMark.last.show',
       text: i18n('last_price_show', locale),
       component: 'switch'

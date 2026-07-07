@@ -672,3 +672,56 @@ body[data-scroll-locked], [data-scroll-locked] {
   border-color: var(--klinecharts-pro-primary-color);
   background-color: var(--klinecharts-pro-primary-color);
 }
+
+/* CAUSA RAÍZ del chart no-responsive: el root del fork trae `height: 80vh`
+   FIJO, así que el chart siempre medía 80% del viewport y NO se achicaba cuando
+   su contenedor cambiaba (al abrir el panel CUENTAS/POSICIONES/… le tapaba el
+   eje X y el panel de volumen). Lo forzamos a llenar su contenedor; el
+   ResizeObserver de KaiChartPro llama a getChart().resize() para reajustar el
+   canvas. Juntos = chart responsive. */
+.klinecharts-pro {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+/* La FavTimeframeBar (React, arriba del chart) es ahora el selector de
+   temporalidad (favoritos + menú ⭐ con todos los TFs + escribir número). Se
+   oculta la lista inline de TFs del period-bar del fork para no DUPLICARLOS
+   ("se repiten los timeframe"). El símbolo y las tools del period-bar se quedan. */
+.klinecharts-pro-period-bar .item.period {
+  display: none !important;
+}
+
+/* Mobile: la barra de dibujo vertical (52px, inútil en táctil) desperdicia
+   ancho y amontona el chart. La ocultamos y el widget pasa a 100% (mecanismo
+   propio del fork). El period-bar (timeframes + botones) scrollea en vez de
+   romper el layout. */
+@media (max-width: 767px) {
+  .klinecharts-pro-drawing-bar {
+    display: none !important;
+  }
+  .klinecharts-pro-widget {
+    width: 100% !important;
+  }
+  .klinecharts-pro-period-bar {
+    overflow-x: auto !important;
+    flex-wrap: nowrap !important;
+    scrollbar-width: none;
+  }
+  .klinecharts-pro-period-bar::-webkit-scrollbar { display: none; }
+  /* Símbolo sin partir en 2 líneas ("BTC/ USD"). */
+  .klinecharts-pro-period-bar .symbol {
+    white-space: nowrap !important;
+    font-size: 13px !important;
+  }
+  /* Herramientas (Indicator/Setting/Screenshot/FullScreen): solo íconos en
+     mobile, sin el texto, para no amontonar. */
+  .klinecharts-pro-period-bar .item.tools span {
+    display: none !important;
+  }
+  /* Timeframes más compactos. */
+  .klinecharts-pro-period-bar .item.period {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+}

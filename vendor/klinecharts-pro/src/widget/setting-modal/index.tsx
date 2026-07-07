@@ -12,7 +12,7 @@
  * limitations under the License.
  */
 
-import { Component, createEffect, For, createSignal } from 'solid-js'
+import { Component, createEffect, For, Show, createSignal } from 'solid-js'
 import { Styles, utils, DeepPartial } from 'klinecharts'
 
 import lodashSet from 'lodash/set'
@@ -29,6 +29,10 @@ export interface SettingModalProps {
   onClose: () => void
   onChange: (style: DeepPartial<Styles>) => void
   onRestoreDefault: (options: SelectDataSourceItem[]) => void
+  // Fork Kai: Timezone vive dentro de este modal. Al hacer click se abre el
+  // modal de zona horaria (se cierra este). `timezoneText` = zona actual.
+  onTimezoneClick?: () => void
+  timezoneText?: string
 }
 
 const SettingModal: Component<SettingModalProps> = props => {
@@ -65,6 +69,15 @@ const SettingModal: Component<SettingModalProps> = props => {
       onClose={props.onClose}>
       <div
         class="klinecharts-pro-setting-modal-content">
+        {/* Fork Kai: fila de Timezone (abre el modal de zona horaria). */}
+        <Show when={props.onTimezoneClick}>
+          <span>{i18n('timezone', props.locale)}</span>
+          <span
+            style={{ cursor: 'pointer', color: 'var(--klinecharts-pro-primary-color)', 'text-align': 'right' }}
+            onClick={() => props.onTimezoneClick?.()}>
+            {props.timezoneText ?? ''} ›
+          </span>
+        </Show>
         <For each={options()}>
           {
             option => {
@@ -85,12 +98,17 @@ const SettingModal: Component<SettingModalProps> = props => {
                   break
                 }
                 case 'switch': {
-                  const open = !!value
+                  // Fork Kai: switches sobre claves enum (p.ej. showRule) llevan
+                  // onValue/offValue; los normales son booleanos.
+                  const hasEnum = (option as any).onValue !== undefined
+                  const open = hasEnum ? value !== (option as any).offValue : !!value
                   component = (
                     <Switch
                       open={open}
                       onChange={() => {
-                        const newValue = !open
+                        const newValue = hasEnum
+                          ? (open ? (option as any).offValue : (option as any).onValue)
+                          : !open
                         update(option, newValue)
                       }}/>
                   )

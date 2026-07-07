@@ -587,6 +587,8 @@ const ChartProComponent: Component<ChartProComponentProps> = props => {
         <SettingModal
           locale={props.locale}
           currentStyles={utils.clone(widget!.getStyles())}
+          timezoneText={timezone().key}
+          onTimezoneClick={() => { setSettingModalVisible(false); setTimezoneModalVisible(true) }}
           onClose={() => { setSettingModalVisible(false) }}
           onChange={style => {
             widget?.setStyles(style)

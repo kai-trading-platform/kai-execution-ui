@@ -45,6 +45,8 @@ import eightWaves from './eightWaves'
 import anyWaves from './anyWaves'
 import abcd from './abcd'
 import xabcd from './xabcd'
+import positionLong from './positionLong'
+import positionShort from './positionShort'
 
 import weakMagnet from './weakMagnet'
 import strongMagnet from './strongMagnet'
@@ -93,6 +95,8 @@ export const mapping = {
   anyWaves,
   abcd,
   xabcd,
+  positionLong,
+  positionShort,
   weak_magnet: weakMagnet,
   strong_magnet: strongMagnet,
   lock,
@@ -154,6 +158,14 @@ export function createWaveOptions (locale: string): SelectDataSourceItem[] {
     { key: 'fiveWaves', text: i18n('five_waves', locale) },
     { key: 'eightWaves', text: i18n('eight_waves', locale) },
     { key: 'anyWaves', text: i18n('any_waves', locale) },
+  ]
+}
+
+// Fork Kai: herramientas de posición (LONG / SHORT), solo análisis.
+export function createPositionOptions (locale: string): SelectDataSourceItem[] {
+  return [
+    { key: 'positionLong', text: i18n('long_position', locale) },
+    { key: 'positionShort', text: i18n('short_position', locale) }
   ]
 }
 

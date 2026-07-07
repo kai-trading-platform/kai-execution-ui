@@ -100,14 +100,15 @@ export function MarketSocketProvider({ children }: { children: React.ReactNode }
       reconnection: true,
     });
 
+    // El estado de conexión se refleja en la UI (ícono wifi); no ensuciamos la
+    // consola con logs de connect/disconnect (en dev StrictMode monta el socket
+    // 2× y generaba ruido de reconexión).
     newSocket.on('connect', () => {
       setIsConnected(true);
-      console.log('Market websocket connected');
     });
 
     newSocket.on('disconnect', () => {
       setIsConnected(false);
-      console.log('Market websocket disconnected');
     });
 
     newSocket.on('tick', (data: { accountId: string; symbol: string; tick: Tick }) => {
