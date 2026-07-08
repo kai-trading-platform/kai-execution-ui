@@ -221,9 +221,6 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const [alertsOpen, setAlertsOpen] = useState<boolean>(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
   const [mobilePanel, setMobilePanel] = useState<Panel | null>(null);
-  // A4 — visual-only "Trade Arrows" toggle for the chart overlay (no arrows
-  // system exists yet; a local boolean mirrors the AlphaTrader control).
-  const [tradeArrows, setTradeArrows] = useState<boolean>(true);
   const { settings, setSetting } = useTerminalSettings();
   const [timeframe, setTimeframeState] = useState<string>(() => {
     try {
@@ -986,25 +983,6 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
               />
             )}
 
-            {/* A4 — chart overlays. Anchored to the BOTTOM of the chart body so
-                controls never collide with the fork header (38px period-bar on
-                top, 52px drawing-bar on the left) or the OHLC/indicator legend.
-                Container ignores pointer events; only the interactive controls
-                opt back in so the chart stays draggable. */}
-            <div className="pointer-events-none absolute inset-0 z-20">
-              {/* Toda la capa de trade in-chart (arrows + BUY/SELL) es diseño de
-                  FUTUROS; el chart CFD/forex queda limpio (se opera desde el
-                  panel derecho VENDER/COMPRAR). */}
-              {strategy.mode === "futures" && (
-                <button
-                  onClick={() => setTradeArrows((v) => !v)}
-                  className="pointer-events-auto absolute bottom-8 left-[60px] rounded-md border border-white/10 bg-[#0d0f16]/90 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/70 hover:bg-white/10 backdrop-blur transition-colors"
-                  title="Mostrar flechas de operaciones en el gráfico"
-                >
-                  Trade Arrows: <span className={tradeArrows ? "text-[#2ed68d]" : "text-white/40"}>{tradeArrows ? "ON" : "OFF"}</span>
-                </button>
-              )}
-            </div>
           </div>
           <div className={cn("border-t border-white/10 bg-[#0d0f16] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
             <div className="flex items-center justify-between border-b border-white/10 px-2 sm:px-3 py-1.5">
