@@ -1140,7 +1140,31 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         )}
       </div>
 
-      <div className="md:hidden flex items-center justify-around border-t border-white/10 bg-[#0d0f16] py-2 shrink-0">
+      {/* Acceso rápido de trading en móvil (estilo Exness): SELL/BUY con el
+          precio vivo del símbolo activo. NO ejecutan — abren el sheet Operar
+          con el formulario completo (riesgo de fat-finger fuera). */}
+      <div className="md:hidden grid grid-cols-2 gap-px border-t border-white/10 bg-white/10 shrink-0">
+        <button
+          onClick={() => setMobilePanel("trade")}
+          className="flex items-center justify-center gap-2 bg-[#1a0f12] py-1.5 active:bg-[#2a1518] transition-colors"
+        >
+          <span className="text-[9px] font-semibold uppercase tracking-wider text-[#ef5350]/70">Sell</span>
+          <span className="text-[13px] font-bold tabular-nums text-[#ef5350]">
+            {bidPrice > 0 ? bidPrice : "—"}
+          </span>
+        </button>
+        <button
+          onClick={() => setMobilePanel("trade")}
+          className="flex items-center justify-center gap-2 bg-[#0d1a14] py-1.5 active:bg-[#14261d] transition-colors"
+        >
+          <span className="text-[9px] font-semibold uppercase tracking-wider text-[#2ed68d]/70">Buy</span>
+          <span className="text-[13px] font-bold tabular-nums text-[#2ed68d]">
+            {askPrice > 0 ? askPrice : "—"}
+          </span>
+        </button>
+      </div>
+
+      <div className="md:hidden flex items-center justify-around border-t border-white/10 bg-[#0d0f16] py-1 shrink-0">
         <Button
           variant="ghost"
           size="sm"
@@ -1242,18 +1266,19 @@ function TopHeader({
   }, []);
 
   return (
-    <header className="flex items-center justify-between border-b border-white/10 bg-[#0d0f16] px-3 sm:px-4 py-2 text-sm shrink-0">
-      <div className="flex items-center gap-3 sm:gap-6 min-w-0">
+    <header className="flex items-center justify-between border-b border-white/10 bg-[#0d0f16] px-2 py-1 sm:px-4 sm:py-2 text-sm shrink-0">
+      <div className="flex items-center gap-2 sm:gap-6 min-w-0">
         <div className="flex items-center gap-2 shrink-0">
-          <img src="/apple-touch-icon.png" alt="Kai" className="h-7 w-7 rounded-lg" />
+          <img src="/apple-touch-icon.png" alt="Kai" className="h-6 w-6 sm:h-7 sm:w-7 rounded-lg" />
         </div>
         <div className="relative" ref={ref}>
           <button
             onClick={() => setOpen((v) => !v)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-white/10 bg-[#151824] hover:border-white/20 cursor-pointer min-w-0 transition-colors"
+            className="flex items-center gap-2 px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg border border-white/10 bg-[#151824] hover:border-white/20 cursor-pointer min-w-0 transition-colors"
           >
             <div className="text-left min-w-0">
-              <div className="text-[10px] text-white/45 truncate max-w-[120px] sm:max-w-none">
+              {/* En móvil solo el nº de cuenta: una línea = header más bajo. */}
+              <div className="hidden sm:block text-[10px] text-white/45 truncate max-w-[120px] sm:max-w-none">
                 {accountName}
               </div>
               <div className="text-[13px] font-semibold truncate tabular-nums">#{accountNumber}</div>
