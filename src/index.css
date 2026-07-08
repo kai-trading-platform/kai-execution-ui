@@ -226,176 +226,20 @@ All colors MUST be HSL.
   }
 }
 
-/* Mobile-first responsive adjustments */
+/* Ajustes móviles mínimos. El bloque legacy que vivía aquí (header con
+   flex-wrap forzado, button min-height 44px, .grid.grid-cols-2 -> 1 columna
+   bajo 375px, overrides de dialog/typography con !important) venía de la app
+   vieja y rompía el layout Tailwind del terminal en móvil — eliminado. */
 @media (max-width: 768px) {
-  /* Typography scaling */
-  h1 {
-    font-size: 1.5rem !important;
+  /* iOS hace zoom automático al enfocar inputs con fuente <16px */
+  input,
+  select,
+  [role="combobox"] {
+    font-size: 16px !important;
   }
-  h2 {
-    font-size: 1.25rem !important;
-  }
-  h3 {
-    font-size: 1.125rem !important;
-  }
-  
-  /* Container padding */
-  .container {
-    padding-left: 1rem !important;
-    padding-right: 1rem !important;
-  }
-  
-  /* Header adjustments */
-  header .container > div {
-    flex-direction: column;
-    gap: 1rem;
-    align-items: stretch !important;
-  }
-  
-  /* Header buttons - wrap and full width */
-  header .flex.items-center.gap-3:last-child,
-  header .flex.gap-2 {
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 0.5rem;
-  }
-  
-  header .flex.items-center.gap-3:last-child > button,
-  header .flex.gap-2 > button {
-    flex: 1 1 calc(50% - 0.25rem);
-    min-width: 120px;
-    font-size: 0.75rem;
-    padding: 0.5rem 0.75rem;
-  }
-  
-  /* Hide button text on very small screens, show only icons */
-  @media (max-width: 400px) {
-    header button span:not(.sr-only) {
-      display: none;
-    }
-    header button {
-      min-width: auto;
-      flex: 0 0 auto;
-      padding: 0.5rem;
-    }
-  }
-  
-  /* Card padding adjustments */
-  .card, [class*="CardContent"] {
-    padding: 1rem !important;
-  }
-  
-  /* Grid adjustments - stack on mobile */
-  .grid.grid-cols-2,
-  .grid.grid-cols-3,
-  .grid.grid-cols-4 {
-    grid-template-columns: repeat(2, 1fr) !important;
-  }
-  
-  .grid.lg\\:grid-cols-3 {
-    grid-template-columns: 1fr !important;
-  }
-  
-  /* Price boxes - 2 columns on mobile */
-  .grid.grid-cols-3.gap-2 {
-    grid-template-columns: repeat(2, 1fr) !important;
-  }
-  .grid.grid-cols-3.gap-2 > div:first-child {
-    grid-column: span 2;
-  }
-  
-  /* Font mono sizes */
-  .font-mono {
-    font-size: 0.875rem !important;
-  }
-  
-  /* Button sizing */
-  button {
-    min-height: 44px; /* Touch-friendly minimum */
-  }
-  
-  /* Input and select sizing */
-  input, select, [role="combobox"] {
-    min-height: 44px;
-    font-size: 16px !important; /* Prevents iOS zoom */
-  }
-  
-  /* Popover and dialogs - full width on mobile */
-  [role="dialog"] {
-    max-width: calc(100vw - 2rem) !important;
-    margin: 1rem !important;
-  }
-  
-  /* Scrollable containers */
+
   .overflow-x-auto {
     -webkit-overflow-scrolling: touch;
-  }
-  
-  /* Badge sizing */
-  .badge {
-    font-size: 0.65rem;
-    padding: 0.25rem 0.5rem;
-  }
-  
-  /* Chart height on mobile */
-  .recharts-wrapper {
-    max-height: 300px !important;
-  }
-}
-
-/* Small phones (SE, older devices) */
-@media (max-width: 375px) {
-  .container {
-    padding-left: 0.75rem !important;
-    padding-right: 0.75rem !important;
-  }
-  
-  h1 {
-    font-size: 1.25rem !important;
-  }
-  
-  .grid.grid-cols-2,
-  .grid.grid-cols-3,
-  .grid.grid-cols-4 {
-    grid-template-columns: 1fr !important;
-  }
-}
-
-/* Large phones (Samsung S25 Ultra, iPhone Pro Max) */
-@media (min-width: 400px) and (max-width: 768px) {
-  /* Better use of space on large phones */
-  .container {
-    max-width: 100%;
-  }
-  
-  /* 2-column grids work well on larger phones */
-  .grid.grid-cols-4 {
-    grid-template-columns: repeat(2, 1fr) !important;
-  }
-}
-
-/* Landscape mode adjustments */
-@media (max-width: 900px) and (orientation: landscape) {
-  header {
-    padding: 0.5rem 0 !important;
-  }
-  
-  header .container > div {
-    flex-direction: row;
-    flex-wrap: wrap;
-  }
-  
-  main {
-    padding-top: 1rem !important;
-    padding-bottom: 1rem !important;
-  }
-  
-  /* Reduce vertical spacing */
-  .space-y-6 {
-    gap: 1rem !important;
-  }
-  .space-y-4 {
-    gap: 0.75rem !important;
   }
 }
 

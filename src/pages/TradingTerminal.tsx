@@ -1142,23 +1142,24 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
 
       {/* Acceso rápido de trading en móvil (estilo Exness): SELL/BUY con el
           precio vivo del símbolo activo. NO ejecutan — abren el sheet Operar
-          con el formulario completo (riesgo de fat-finger fuera). */}
-      <div className="md:hidden grid grid-cols-2 gap-px border-t border-white/10 bg-white/10 shrink-0">
+          con el formulario completo (riesgo de fat-finger fuera). Mismos
+          colores que los CTAs BUY/SELL @ MARKET de desktop. */}
+      <div className="md:hidden flex gap-1.5 border-t border-white/10 bg-[#0d0f16] px-2 py-1.5 shrink-0">
         <button
           onClick={() => setMobilePanel("trade")}
-          className="flex items-center justify-center gap-2 bg-[#1a0f12] py-1.5 active:bg-[#2a1518] transition-colors"
+          className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#e0413d] active:bg-[#ef5350] transition-colors"
         >
-          <span className="text-[9px] font-semibold uppercase tracking-wider text-[#ef5350]/70">Sell</span>
-          <span className="text-[13px] font-bold tabular-nums text-[#ef5350]">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-white/80">Sell</span>
+          <span className="text-[13px] font-bold tabular-nums text-white">
             {bidPrice > 0 ? bidPrice : "—"}
           </span>
         </button>
         <button
           onClick={() => setMobilePanel("trade")}
-          className="flex items-center justify-center gap-2 bg-[#0d1a14] py-1.5 active:bg-[#14261d] transition-colors"
+          className="flex h-9 flex-1 items-center justify-center gap-1.5 rounded-md bg-[#1aa86a] active:bg-[#1fbd78] transition-colors"
         >
-          <span className="text-[9px] font-semibold uppercase tracking-wider text-[#2ed68d]/70">Buy</span>
-          <span className="text-[13px] font-bold tabular-nums text-[#2ed68d]">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-white/80">Buy</span>
+          <span className="text-[13px] font-bold tabular-nums text-white">
             {askPrice > 0 ? askPrice : "—"}
           </span>
         </button>
