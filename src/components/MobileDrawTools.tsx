@@ -3,6 +3,7 @@ import {
   Pencil,
   X,
   TrendingUp,
+  TrendingDown,
   Minus,
   MoveUpRight,
   BarChart3,
@@ -17,6 +18,8 @@ import { cn } from "@/lib/utils";
 // En móvil la drawing-bar vertical del fork está oculta (CSS). Este FAB + bottom
 // sheet le da acceso táctil a las herramientas de dibujo.
 const TOOLS: Array<{ name: string; label: string; Icon: LucideIcon; rotate?: boolean }> = [
+  { name: "positionLong", label: "Long", Icon: TrendingUp },
+  { name: "positionShort", label: "Short", Icon: TrendingDown },
   { name: "segment", label: "Tendencia", Icon: TrendingUp },
   { name: "horizontalStraightLine", label: "Horizontal", Icon: Minus },
   { name: "verticalStraightLine", label: "Vertical", Icon: Minus, rotate: true },
