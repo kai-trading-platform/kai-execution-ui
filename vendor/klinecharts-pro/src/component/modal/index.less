@@ -51,3 +51,40 @@
     }
   }
 }
+// Fork Kai: responsive móvil — el modal pasa a fixed (el contenedor del chart
+// es bajito en móvil), cabe en el viewport, scrollea por dentro y la X gana
+// área táctil. width: auto pisa el width inline fijo (400px) del componente.
+@media (max-width: 768px) {
+  .@{prefix-cls}-modal {
+    position: fixed;
+    .inner {
+      display: flex;
+      flex-direction: column;
+      width: auto !important;
+      min-width: min(400px, calc(100vw - 16px));
+      max-width: calc(100vw - 16px);
+      max-height: calc(100dvh - 32px);
+      .title-container {
+        flex-shrink: 0;
+        padding: 0 16px;
+        .close-icon {
+          width: 18px;
+          height: 18px;
+          padding: 10px;
+          margin: -10px;
+          box-sizing: content-box;
+        }
+      }
+      .content-container {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 0 16px;
+      }
+      .button-container {
+        flex-shrink: 0;
+      }
+    }
+  }
+}

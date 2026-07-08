@@ -46,12 +46,16 @@ interface PrevSymbolPeriod {
 function createIndicator (widget: Nullable<Chart>, indicatorName: string, isStack?: boolean, paneOptions?: PaneOptions, calcParams?: number[]): Nullable<string> {
   if (indicatorName === 'VOL') {
     paneOptions = { gap: { bottom: 2 }, ...paneOptions }
+    // Fork Kai: VOL limpio — sin las medias móviles (MA 5/10/20 default de
+    // klinecharts) dibujadas sobre las barras de volumen, salvo que la app
+    // pase calcParams explícitos.
+    calcParams = calcParams ?? []
   }
   return widget?.createIndicator({
     name: indicatorName,
-    // Fork Kai: si la app pasó calcParams (p.ej. EMA 10/20/55/200) los aplicamos;
-    // si no, klinecharts usa sus defaults.
-    ...(calcParams && calcParams.length > 0 ? { calcParams } : {}),
+    // Fork Kai: si la app pasó calcParams (p.ej. EMA 10/20/55/200) los
+    // aplicamos; [] vale (VOL sin MAs); undefined = defaults de klinecharts.
+    ...(calcParams ? { calcParams } : {}),
     // @ts-expect-error
     createTooltipDataSource: ({ indicator, defaultStyles }) => {
       const icons = []

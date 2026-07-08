@@ -23,3 +23,14 @@
     }
   }
 }
+
+// Fork Kai: en móvil la lista suelta su alto fijo (440px) y scrollea dentro
+// del .content-container del modal responsive.
+@media (max-width: 768px) {
+  .@{prefix-cls}-indicator-modal-list {
+    height: auto;
+    max-height: none;
+    margin-left: -16px;
+    margin-right: -16px;
+  }
+}

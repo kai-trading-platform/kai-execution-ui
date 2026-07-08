@@ -3,7 +3,9 @@ import { LineType, TooltipShowRule } from 'klinecharts';
 import type { Overlay, OverlayCreate } from 'klinecharts';
 import { KLineChartPro } from '@klinecharts/pro';
 import type { SymbolInfo, Period } from '@klinecharts/pro';
-import '@klinecharts/pro/dist/klinecharts-pro.css';
+// CSS del FORK vendored (no del paquete de node_modules): incluye los estilos
+// responsive móviles de los modales. El alias de Vite solo re-mapea el JS.
+import '../../vendor/klinecharts-pro/dist/klinecharts-pro.css';
 
 import { cn } from '@/lib/utils';
 import { useAccountSymbols } from '@/hooks/useAccountSymbols';
@@ -216,6 +218,10 @@ export function KaiChartPro({
       // EMAs de la estrategia (entrada/segunda/pullback/bias); la librería trae
       // 6/12/20 por defecto, así que forzamos calcParams vía el fork.
       mainIndicators: [{ name: 'EMA', calcParams: [10, 20, 55, 200] }],
+      // Sin panel de volumen por defecto (el Pro trae ['VOL']): se activa
+      // desde Indicator → Sub Indicator → VOL, y el fork lo crea limpio
+      // (sin medias móviles encima de las barras).
+      subIndicators: [],
       timezone: resolveTimezone(timezone),
       // El buscador interno cambió el símbolo → que el panel de orden lo siga.
       onSymbolChange: (ticker) => onSymbolChangeRef.current?.(ticker),

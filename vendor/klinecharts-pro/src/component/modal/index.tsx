@@ -26,7 +26,12 @@ export interface ModalProps extends ParentProps {
 const Modal: ParentComponent<ModalProps> = (props) => {
   return (
     <div
-      class="klinecharts-pro-modal">
+      class="klinecharts-pro-modal"
+      onClick={(e) => {
+        // Fork Kai: tocar el fondo cierra el modal (clave en móvil, donde la
+        // X es pequeña y "salir" era difícil).
+        if (e.target === e.currentTarget) props.onClose?.()
+      }}>
       <div
         style={{ width: `${props.width ?? 400}px` }}
         class="inner">
