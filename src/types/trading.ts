@@ -39,6 +39,10 @@ export interface ConnectedTradingAccount {
    * the terminal's cap badge (see TradingTerminal.tsx).
    */
   maxContracts?: number;
+  /** Balance al inicio del día de trading actual (18:00 ET). */
+  sodBalance?: number | null;
+  /** PnL realizado del día de trading actual. */
+  netDailyPnl?: number | null;
   capabilities: BrokerCapabilities;
 }
 
@@ -55,6 +59,43 @@ export interface TradingPosition {
   takeProfit: number | null;
   profitLoss: number;
   openedAt: string | null;
+  comment?: string | null;
+  magic?: number | null;
+}
+
+export interface TradingHistoryItem {
+  id: string;
+  tradingAccountId: string;
+  provider: BrokerProviderKey;
+  symbol: string;
+  side: TradingOrderSide;
+  volume: number;
+  entryPrice: number;
+  exitPrice: number | null;
+  /** SL/TP con los que se abrió el trade — para dibujar la caja LONG/SHORT. */
+  stopLoss: number | null;
+  takeProfit: number | null;
+  profitLoss: number | null;
+  openedAt: string | null;
+  closedAt: string | null;
+}
+
+/** Clase de una orden pendiente (a qué precio dispara). */
+export type TradingOrderKind = "limit" | "stop" | "stop_limit" | "other";
+
+/** Orden PENDIENTE (working order): colocada pero aún no ejecutada. */
+export interface TradingOrder {
+  id: string;
+  tradingAccountId: string;
+  provider: BrokerProviderKey;
+  symbol: string;
+  side: TradingOrderSide;
+  type: TradingOrderKind;
+  volume: number;
+  price: number | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  placedAt: string | null;
   comment?: string | null;
   magic?: number | null;
 }

@@ -1,5 +1,6 @@
 import { nestAuthFetch } from "@/api/client";
 import type {
+  TradingHistoryItem,
   ConnectedTradingAccount,
   CloseTradingPositionPayload,
   CloseTradingPositionByPayload,
@@ -13,6 +14,7 @@ import type {
   PlaceTradingOrderResult,
   ReversePositionPayload,
   ReversePositionResult,
+  TradingOrder,
   TradingPosition,
   UpdateTradingPositionStopsPayload,
   UpdateTradingPositionStopsResult,
@@ -22,11 +24,27 @@ export function listTradingAccounts(): Promise<ConnectedTradingAccount[]> {
   return nestAuthFetch<ConnectedTradingAccount[]>("/api/trading/accounts");
 }
 
+export function listTradingHistory(
+  tradingAccountId: string,
+): Promise<TradingHistoryItem[]> {
+  return nestAuthFetch<TradingHistoryItem[]>(
+    `/api/trading/accounts/${encodeURIComponent(tradingAccountId)}/history`,
+  );
+}
+
 export function listTradingPositions(
   tradingAccountId: string,
 ): Promise<TradingPosition[]> {
   return nestAuthFetch<TradingPosition[]>(
     `/api/trading/accounts/${encodeURIComponent(tradingAccountId)}/positions`,
+  );
+}
+
+export function listTradingOrders(
+  tradingAccountId: string,
+): Promise<TradingOrder[]> {
+  return nestAuthFetch<TradingOrder[]>(
+    `/api/trading/accounts/${encodeURIComponent(tradingAccountId)}/orders`,
   );
 }
 

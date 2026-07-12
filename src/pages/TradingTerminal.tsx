@@ -15,6 +15,8 @@ import { useTerminalSettings } from "@/hooks/useTerminalSettings";
 import { cn } from "@/lib/utils";
 import { useTradingAccounts } from "@/hooks/useTradingAccounts";
 import { useTradingPositions } from "@/hooks/useTradingPositions";
+import { useTradingHistory } from "@/hooks/useTradingHistory";
+import { useTradingOrders } from "@/hooks/useTradingOrders";
 import { useAccountSymbols } from "@/hooks/useAccountSymbols";
 import { useMarketSocket } from "@/contexts/MarketSocketContext";
 import { usePlaceTradingOrder } from "@/hooks/usePlaceTradingOrder";
@@ -33,6 +35,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 // tocar código: VITE_CHART_PRO=false.
 const USE_CHART_PRO = import.meta.env.VITE_CHART_PRO !== "false";
 import type { CopyTradingPosition } from "@/modules/copyTrading/types";
+import type { TradingHistoryItem, TradingOrder } from "@/types/trading";
 import { toUiPosition } from "@/lib/positionMapping";
 import { resolveOrderEntryPrice } from "@/lib/orderEntryPrice";
 import { formatSymbolDisplay, compareSymbols, symbolIcon } from "@/lib/symbolDisplay";
@@ -70,7 +73,7 @@ const PREFERRED_DEFAULT_SYMBOL = "MNQ";
 // memos downstream — see the "Maximum update depth exceeded" fix in KaiChart).
 const EMPTY_LIST: never[] = [];
 
-type BottomTab = "CUENTAS" | "POSICIONES" | "ORDENES" | "HISTORIAL";
+type BottomTab = "CUENTAS" | "POSICIONES" | "ORDENES";
 type OrderType = "MERCADO" | "LIMITE" | "STOP";
 type OrderMode = "regular" | "oneClick" | "risk";
 type Panel = "watchlist" | "trade" | "bottom";
@@ -141,6 +144,11 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
 
   const dbAccountId = (resolvedAccount as { id?: string } | null)?.id ?? null;
   const { data: positions = EMPTY_LIST, isLoading: positionsLoading } = useTradingPositions(dbAccountId);
+  // Trades CERRADOS de la cuenta → se dibujan como cajas LONG/SHORT en el chart y
+  // alimentan la sección "Ejecutadas" de la pestaña ÓRDENES.
+  const { data: historyTrades = EMPTY_LIST } = useTradingHistory(dbAccountId);
+  // Órdenes PENDIENTES (working orders) → sección "Pendientes" de ÓRDENES.
+  const { data: orders = EMPTY_LIST } = useTradingOrders(dbAccountId);
   const { symbols, groupedSymbols, loading: symbolsLoading, loadedForAccountId } = useAccountSymbols(dbAccountId);
 
   // Terminal mode is derived from the selected account's provider (spec §4.2):
@@ -171,6 +179,47 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const maxContracts = (resolvedAccount as { maxContracts?: number | null } | null)?.maxContracts ?? null;
 
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
+  // Doble clic en un trade de ÓRDENES → llevar el chart a ese trade (entrada y
+  // salida, para encuadrar la caja LONG/SHORT completa).
+  const [focusTrade, setFocusTrade] = useState<
+    { symbol: string; from: number; to: number; nonce: number } | null
+  >(null);
+  const focusNonceRef = useRef(0);
+  const handleFocusTrade = useCallback(
+    (t: TradingHistoryItem) => {
+      const from = t.openedAt ? Date.parse(t.openedAt) : NaN;
+      const toRaw = t.closedAt ? Date.parse(t.closedAt) : NaN;
+      const anchor = Number.isFinite(from) ? from : toRaw;
+      if (!Number.isFinite(anchor) || !t.symbol) return;
+      const to = Number.isFinite(toRaw) ? toRaw : anchor;
+      if (t.symbol !== selectedSymbol) setSelectedSymbol(t.symbol);
+      focusNonceRef.current += 1;
+      setFocusTrade({
+        symbol: t.symbol,
+        from: Number.isFinite(from) ? from : to,
+        to,
+        nonce: focusNonceRef.current,
+      });
+    },
+    [selectedSymbol],
+  );
+  // Doble clic en una POSICIÓN abierta → centrar el chart en su entrada (la
+  // caja se extiende entrada→ahora, así que centramos en la entrada).
+  const handleFocusPosition = useCallback(
+    (p: CopyTradingPosition) => {
+      const from = p.openedAtIso ? Date.parse(p.openedAtIso) : NaN;
+      if (!Number.isFinite(from) || !p.symbol) return;
+      if (p.symbol !== selectedSymbol) setSelectedSymbol(p.symbol);
+      focusNonceRef.current += 1;
+      setFocusTrade({
+        symbol: p.symbol,
+        from,
+        to: from,
+        nonce: focusNonceRef.current,
+      });
+    },
+    [selectedSymbol],
+  );
   const [categoryFilter, setCategoryFilter] = useState<string>("TODO");
   const [orderType, setOrderType] = useState<OrderType>("MERCADO");
   const [orderMode, setOrderModeState] = useState<OrderMode>(() => {
@@ -203,9 +252,20 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const [bottomTab, setBottomTab] = useState<BottomTab>("POSICIONES");
   // En móvil el panel inferior arranca CERRADO para que el chart use todo el
   // alto (si no, aplasta el chart a una franja). El tab "Posiciones" lo abre.
-  const [bottomOpen, setBottomOpen] = useState<boolean>(
-    () => (typeof window === "undefined" ? true : window.innerWidth >= 768),
-  );
+  const [bottomOpen, setBottomOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    // Preferencia guardada del usuario (abierto/cerrado); si no hay, el default
+    // responsivo (desktop abierto, móvil cerrado).
+    const saved = localStorage.getItem("kai:bottomOpen");
+    if (saved === "1") return true;
+    if (saved === "0") return false;
+    return window.innerWidth >= 768;
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("kai:bottomOpen", bottomOpen ? "1" : "0");
+    }
+  }, [bottomOpen]);
 
   // Al abrir/cerrar el panel inferior (CUENTAS/POSICIONES/…) el área del chart
   // cambia de alto. El chart Pro (klinecharts) solo se reajusta con
@@ -304,22 +364,27 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     if (latency.latencyMs >= 600) return "weak";
     return "good";
   }, [latency.status, latency.latencyMs]);
-  const prevQualityRef = useRef<"good" | "weak" | "bad">("good");
+  // Aviso de conexión con HISTÉRESIS para no spamear: "weak" ya NO dispara toast
+  // (600ms es latencia común, era ruido), y "bad" debe persistir 2 lecturas
+  // seguidas (~10s) antes de avisar — así un ping transitorio no flapea el aviso.
+  // Sólo un toast "bad" y, al recuperar, uno de "restablecida".
+  const badStreakRef = useRef(0);
+  const committedBadRef = useRef(false);
   useEffect(() => {
-    const prev = prevQualityRef.current;
-    if (prev !== connQuality) {
-      if (connQuality === "bad") {
+    if (connQuality === "bad") {
+      badStreakRef.current += 1;
+      if (badStreakRef.current >= 2 && !committedBadRef.current) {
+        committedBadRef.current = true;
         toast.error("Sin conexión estable", {
           description: "Tu internet falla. Ten precaución: las órdenes podrían no enviarse.",
         });
-      } else if (connQuality === "weak") {
-        toast.warning("Conexión lenta", {
-          description: "La conexión va lenta. Opera con precaución, puede haber retrasos.",
-        });
-      } else if (prev === "bad") {
-        toast.success("Conexión restablecida", { description: "Tu internet volvió a la normalidad." });
       }
-      prevQualityRef.current = connQuality;
+      return;
+    }
+    badStreakRef.current = 0;
+    if (committedBadRef.current) {
+      committedBadRef.current = false;
+      toast.success("Conexión restablecida", { description: "Tu internet volvió a la normalidad." });
     }
   }, [connQuality]);
 
@@ -861,9 +926,9 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         activeMobilePanel={mobilePanel}
         equity={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
         currentBalance={(resolvedAccount as { balance?: number | null } | null)?.balance ?? null}
-        unrealizedPnl={uiPositions.length > 0 ? totalPnl : null}
-        netDailyPnl={null}
-        sodBalance={null}
+        unrealizedPnl={uiPositions.length > 0 ? totalPnl : 0}
+        netDailyPnl={(resolvedAccount as { netDailyPnl?: number | null } | null)?.netDailyPnl ?? null}
+        sodBalance={(resolvedAccount as { sodBalance?: number | null } | null)?.sodBalance ?? null}
         openSymbols={openSymbols}
         selectedSymbol={selectedSymbol}
         onSelectTab={setSelectedSymbol}
@@ -950,6 +1015,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                     symbol={selectedSymbol}
                     accountId={dbAccountId}
                     positions={uiPositions}
+                    historyTrades={historyTrades}
                     timeframe={timeframe}
                     onTimeframeChange={setTimeframe}
                     showPositions={settings.showPositions}
@@ -962,12 +1028,14 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                   symbol={selectedSymbol}
                   accountId={dbAccountId}
                   positions={uiPositions}
+                  historyTrades={historyTrades}
                   timeframe={timeframe}
                   timezone={settings.timezone}
                   showPositions={settings.showPositions}
                   showTpSl={settings.showTpSl}
                   onSymbolChange={openSymbol}
                   onPeriodChange={setTimeframe}
+                  focusTrade={focusTrade}
                 />
               </ErrorBoundary>
             ) : (
@@ -975,6 +1043,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                 symbol={selectedSymbol}
                 accountId={dbAccountId}
                 positions={uiPositions}
+                historyTrades={historyTrades}
                 timeframe={timeframe}
                 onTimeframeChange={setTimeframe}
                 showPositions={settings.showPositions}
@@ -987,7 +1056,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
           <div className={cn("border-t border-white/10 bg-[#0d0f16] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
             <div className="flex items-center justify-between border-b border-white/10 px-2 sm:px-3 py-1.5">
               <div className="flex gap-2 sm:gap-4 text-xs overflow-x-auto">
-                {(["CUENTAS", "POSICIONES", "ORDENES", "HISTORIAL"] as const).map((t) => (
+                {(["CUENTAS", "POSICIONES", "ORDENES"] as const).map((t) => (
                   <button
                     key={t}
                     onClick={() => {
@@ -1003,9 +1072,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                       ? `CUENTAS (${routeAccounts.length})`
                       : t === "POSICIONES"
                         ? `POSICIONES (${positions.length})`
-                        : t === "ORDENES"
-                          ? "ÓRDENES (0)"
-                          : "HISTORIAL"}
+                        : `ÓRDENES (${orders.length + historyTrades.length})`}
                   </button>
                 ))}
               </div>
@@ -1042,6 +1109,11 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                 marginFree={(resolvedAccount as { equity?: number | null } | null)?.equity ?? null}
                 onClose={handleClosePosition}
                 onUpdateStops={handleUpdateStops}
+                orders={orders}
+                historyTrades={historyTrades}
+                onFocusTrade={handleFocusTrade}
+                onFocusPosition={handleFocusPosition}
+                unitLabel={strategy.unitLabel}
               />
             )}
           </div>
@@ -1275,15 +1347,12 @@ function TopHeader({
         <div className="relative" ref={ref}>
           <button
             onClick={() => setOpen((v) => !v)}
-            className="flex items-center gap-2 px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg border border-white/10 bg-[#151824] hover:border-white/20 cursor-pointer min-w-0 transition-colors"
+            title={accountName}
+            className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-white/5 cursor-pointer min-w-0 transition-colors"
           >
-            <div className="text-left min-w-0">
-              {/* En móvil solo el nº de cuenta: una línea = header más bajo. */}
-              <div className="hidden sm:block text-[10px] text-white/45 truncate max-w-[120px] sm:max-w-none">
-                {accountName}
-              </div>
-              <div className="text-[13px] font-semibold truncate tabular-nums">#{accountNumber}</div>
-            </div>
+            {/* Plano como los stats del header: solo el nº de cuenta + chevron.
+                El nombre ("Sim 50K") vive en el dropdown para no recargar la barra. */}
+            <div className="text-[13px] font-semibold truncate tabular-nums leading-tight">#{accountNumber}</div>
             <ChevronDown className="h-3.5 w-3.5 text-white/40 shrink-0" />
           </button>
           {open && accounts.length > 0 && (
@@ -1747,6 +1816,111 @@ function CloseAllDialog({
   );
 }
 
+const ORDER_KIND_LABEL: Record<TradingOrder["type"], string> = {
+  limit: "LIMIT",
+  stop: "STOP",
+  stop_limit: "STOP LIMIT",
+  other: "—",
+};
+
+// Contenido de la pestaña ÓRDENES: órdenes PENDIENTES (working orders reales del
+// broker) arriba, y las EJECUTADAS (historial de trades cerrados) abajo —
+// reemplaza a la vieja pestaña HISTORIAL (las abiertas viven en POSICIONES).
+function OrdersTabContent({
+  orders,
+  historyTrades,
+  onFocusTrade,
+}: {
+  orders: TradingOrder[];
+  historyTrades: TradingHistoryItem[];
+  onFocusTrade?: (t: TradingHistoryItem) => void;
+}) {
+  const num = (n: number | null | undefined, dp = 2) =>
+    n == null || !Number.isFinite(n) ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
+  const time = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleString("es-DO", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+  const sectionHead = "sticky top-0 z-10 bg-[#0b1420] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-white/45";
+  const th = "px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-white/40";
+
+  return (
+    <div className="flex-1 overflow-auto" style={{ scrollbarWidth: "thin" }}>
+      {/* Órdenes PENDIENTES (working orders del broker). Cuentas sim/a-mercado
+          nunca las tienen, así que la sección se oculta si está vacía en vez de
+          mostrar un "Sin órdenes pendientes" permanente. */}
+      {orders.length > 0 && (
+        <>
+          <div className={sectionHead}>Pendientes</div>
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-left">
+                <th className={th + " text-left"}>Símbolo</th>
+                <th className={th + " text-left"}>Lado</th>
+                <th className={th + " text-left"}>Tipo</th>
+                <th className={th + " text-right"}>Contratos</th>
+                <th className={th + " text-right"}>Precio</th>
+                <th className={th + " text-right"}>SL</th>
+                <th className={th + " text-right"}>TP</th>
+                <th className={th + " text-right"}>Colocada</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((o) => (
+                <tr key={o.id} className="border-t border-white/5 text-white/80">
+                  <td className="px-3 py-1.5 font-medium text-white">{formatSymbolDisplay(o.symbol)}</td>
+                  <td className={`px-3 py-1.5 ${o.side === "buy" ? "text-[#4ac767]" : "text-[#f0705c]"}`}>{o.side === "buy" ? "BUY" : "SELL"}</td>
+                  <td className="px-3 py-1.5">{ORDER_KIND_LABEL[o.type]}</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{num(o.volume)}</td>
+                  <td className="px-3 py-1.5 text-right font-mono">{num(o.price)}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-[#f0705c]">{num(o.stopLoss)}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-[#4ac767]">{num(o.takeProfit)}</td>
+                  <td className="px-3 py-1.5 text-right text-white/50">{time(o.placedAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <div className={cn(sectionHead, orders.length > 0 && "border-t border-white/10")}>Ejecutadas</div>
+      {historyTrades.length === 0 ? (
+        <div className="px-3 py-4 text-center text-xs text-white/40">Sin ejecutadas recientes</div>
+      ) : (
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="text-left">
+              <th className={th + " text-left"}>Símbolo</th>
+              <th className={th + " text-left"}>Lado</th>
+              <th className={th + " text-right"}>Contratos</th>
+              <th className={th + " text-right"}>Entrada</th>
+              <th className={th + " text-right"}>PnL</th>
+              <th className={th + " text-right"}>Cierre</th>
+            </tr>
+          </thead>
+          <tbody>
+            {historyTrades.map((t) => (
+              <tr
+                key={t.id}
+                onDoubleClick={() => onFocusTrade?.(t)}
+                title="Doble clic para ver este trade en el chart"
+                className="border-t border-white/5 text-white/80 cursor-pointer hover:bg-white/5"
+              >
+                <td className="px-3 py-1.5 font-medium text-white">{formatSymbolDisplay(t.symbol)}</td>
+                <td className={`px-3 py-1.5 ${t.side === "buy" ? "text-[#4ac767]" : "text-[#f0705c]"}`}>{t.side === "buy" ? "BUY" : "SELL"}</td>
+                <td className="px-3 py-1.5 text-right font-mono">{num(t.volume)}</td>
+                <td className="px-3 py-1.5 text-right font-mono">{num(t.entryPrice)}</td>
+                <td className={`px-3 py-1.5 text-right font-mono ${(t.profitLoss ?? 0) >= 0 ? "text-[#4ac767]" : "text-[#f0705c]"}`}>
+                  {t.profitLoss == null ? "—" : `${t.profitLoss >= 0 ? "+" : ""}$${num(t.profitLoss)}`}
+                </td>
+                <td className="px-3 py-1.5 text-right text-white/50">{time(t.closedAt)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function BottomPanel({
   positions,
   loading,
@@ -1758,6 +1932,11 @@ function BottomPanel({
   marginFree,
   onClose,
   onUpdateStops,
+  orders,
+  historyTrades,
+  onFocusTrade,
+  onFocusPosition,
+  unitLabel,
 }: {
   positions: CopyTradingPosition[];
   loading: boolean;
@@ -1769,7 +1948,15 @@ function BottomPanel({
   marginFree: number | null;
   onClose: (p: CopyTradingPosition) => void;
   onUpdateStops: (p: CopyTradingPosition, sl: number | null, tp: number | null) => Promise<void>;
+  orders: TradingOrder[];
+  historyTrades: TradingHistoryItem[];
+  onFocusTrade?: (t: TradingHistoryItem) => void;
+  onFocusPosition?: (p: CopyTradingPosition) => void;
+  unitLabel: string;
 }) {
+  // Futuros → "Contratos" (enteros); CFD → "Lotes" (2 decimales). El label y el
+  // formato de la columna de cantidad siguen el modo del terminal.
+  const isContracts = unitLabel === "Contratos";
   const [edit, setEdit] = useState<CopyTradingPosition | null>(null);
   const [editSl, setEditSl] = useState("");
   const [editTp, setEditTp] = useState("");
@@ -1867,7 +2054,7 @@ function BottomPanel({
                 <div>Ticket</div>
                 <div>Símbolo</div>
                 <div>Tipo</div>
-                <div className="text-right">Volumen</div>
+                <div className="text-right">{unitLabel}</div>
                 <div className="text-right">Entrada</div>
                 <div className="text-right">Actual</div>
                 <div className="text-right">TP</div>
@@ -1877,7 +2064,12 @@ function BottomPanel({
                 <div></div>
               </div>
               {positions.map((p) => (
-                <div key={p.id} className="px-3 py-2 text-xs hover:bg-white/5 border-b border-white/5">
+                <div
+                  key={p.id}
+                  onDoubleClick={() => onFocusPosition?.(p)}
+                  title="Doble clic para ver esta posición en el chart"
+                  className="px-3 py-2 text-xs hover:bg-white/5 border-b border-white/5 cursor-pointer"
+                >
                   {/* Mobile */}
                   <div className="grid grid-cols-2 sm:hidden gap-1">
                     <div className="flex items-center gap-2">
@@ -1906,7 +2098,7 @@ function BottomPanel({
                         {p.side === "LONG" ? "BUY" : "SELL"}
                       </Badge>
                     </div>
-                    <div className="text-right text-white/80 tabular-nums">{p.qty.toFixed(2)}</div>
+                    <div className="text-right text-white/80 tabular-nums">{isContracts ? p.qty.toFixed(0) : p.qty.toFixed(2)}</div>
                     <div className="text-right text-white/80 tabular-nums">{px(p.avgPrice)}</div>
                     <div className={cn("text-right font-semibold tabular-nums", p.currentPrice >= p.avgPrice ? "text-[#2ed68d]" : "text-[#ef5350]")}>
                       {px(p.currentPrice)}
@@ -1991,10 +2183,11 @@ function BottomPanel({
       </Dialog>
 
       {activeTab === "ORDENES" && (
-        <div className="flex-1 flex items-center justify-center text-white/40 text-xs">Sin órdenes pendientes</div>
-      )}
-      {activeTab === "HISTORIAL" && (
-        <div className="flex-1 flex items-center justify-center text-white/40 text-xs">Sin historial</div>
+        <OrdersTabContent
+          orders={orders}
+          historyTrades={historyTrades}
+          onFocusTrade={onFocusTrade}
+        />
       )}
     </>
   );
@@ -2073,6 +2266,11 @@ function TradePanel({
 }) {
   const ratio = reward > 0 && risk > 0 ? `1 : ${(reward / risk).toFixed(2)}` : "—";
   const hasData = bidPrice > 0;
+  // Precio de disparo para LIMIT/STOP (UI). La ejecución real de pendientes se
+  // cablea aparte (execution-api → bridge MT5, que ya soporta buy_limit/sell_stop).
+  const [orderPrice, setOrderPrice] = useState<string>("");
+  const isPending = orderType !== "MERCADO";
+  const orderTypeLabel = orderType === "LIMITE" ? "LIMIT" : orderType === "STOP" ? "STOP" : "MARKET";
   const isOneClick = orderMode === "oneClick";
   const isRisk = orderMode === "risk";
   const isFutures = strategy.mode === "futures";
@@ -2144,22 +2342,48 @@ function TradePanel({
           <span className="text-[10px] text-white/40 uppercase tracking-wide">Futuros · Contratos</span>
         </div>
         <div className="px-3 pt-3 pb-2 space-y-3 overflow-y-auto flex-1">
-          {/* CONTRACTS */}
+          {/* CONTRACTS — etiqueta fija del símbolo activo (se cambia desde las tabs/watchlist). */}
           <div>
             <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Contracts</div>
-            <div className="flex items-center justify-between rounded-md border border-white/10 bg-[#151824] px-3 py-2 text-sm">
+            <div className="flex items-center rounded-md border border-white/10 bg-[#151824] px-3 py-2 text-sm">
               <span className="truncate text-white/90">{symbol ? formatSymbolDisplay(symbol) : "Selecciona un símbolo"}</span>
-              <ChevronDown className="h-4 w-4 text-white/40 shrink-0" />
             </div>
           </div>
-          {/* ORDER TYPE */}
+          {/* ORDER TYPE — dropdown funcional Market / Limit / Stop */}
           <div>
             <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Order Type</div>
-            <div className="flex items-center justify-between rounded-md border border-white/10 bg-[#151824] px-3 py-2 text-sm">
-              <span className="text-white/90">Market</span>
-              <ChevronDown className="h-4 w-4 text-white/40 shrink-0" />
+            <div className="relative">
+              <select
+                value={orderType}
+                onChange={(e) => setOrderType(e.target.value as OrderType)}
+                className="w-full appearance-none rounded-md border border-white/10 bg-[#151824] px-3 py-2 pr-8 text-sm text-white/90 outline-none focus:border-white/25 cursor-pointer"
+              >
+                <option value="MERCADO">Market</option>
+                <option value="LIMITE">Limit</option>
+                <option value="STOP">Stop</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-white/40" />
             </div>
           </div>
+          {/* Precio de disparo (solo LIMIT/STOP) */}
+          {isPending && (
+            <div>
+              <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">
+                Precio {orderTypeLabel}
+              </div>
+              <Input
+                type="number"
+                inputMode="decimal"
+                value={orderPrice}
+                onChange={(e) => setOrderPrice(e.target.value)}
+                placeholder={lastPrice > 0 ? String(lastPrice) : "Precio de disparo"}
+                className="bg-[#151824] border-white/10 text-white/90"
+              />
+              <div className="mt-1 text-[10px] text-amber-400/80">
+                Ejecución de órdenes {orderTypeLabel} disponible en cuentas MT5 reales — en esta cuenta sim solo opera a mercado.
+              </div>
+            </div>
+          )}
           {/* # OF CONTRACTS */}
           <div>
             <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1"># of Contracts</div>
@@ -2170,7 +2394,7 @@ function TradePanel({
               className="h-9 bg-[#151824] border-white/10 text-white tabular-nums"
             />
             <div className="text-[10px] text-white/40 mt-1 tabular-nums">
-              {contractCount} contrato(s){maxContracts != null && maxContracts > 0 ? ` · máx ${maxContracts} (Apex)` : ""}
+              {contractCount} contrato(s){maxContracts != null && maxContracts > 0 ? ` · máx ${maxContracts}` : ""}
             </div>
           </div>
           {/* Quick-qty row */}
@@ -2267,21 +2491,21 @@ function TradePanel({
             )}
           </div>
         </div>
-        {/* BUY / SELL @ MARKET */}
+        {/* BUY / SELL — @ MARKET (limit/stop se deshabilita hasta cablear su ejecución) */}
         <div className="grid grid-cols-2 gap-2 px-3 pt-2 shrink-0">
           <Button
-            disabled={!ordersEnabled || !hasData || submitting}
+            disabled={!ordersEnabled || !hasData || submitting || isPending}
             onClick={() => onSubmit("buy")}
             className="h-12 bg-[#1aa86a] hover:bg-[#1fbd78] text-white font-bold text-[13px] tracking-wide disabled:opacity-40"
           >
-            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : `BUY +${contractCount} @ MARKET`}
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : `BUY +${contractCount} @ ${orderTypeLabel}`}
           </Button>
           <Button
-            disabled={!ordersEnabled || !hasData || submitting}
+            disabled={!ordersEnabled || !hasData || submitting || isPending}
             onClick={() => onSubmit("sell")}
             className="h-12 bg-[#e0413d] hover:bg-[#ef5350] text-white font-bold text-[13px] tracking-wide disabled:opacity-40"
           >
-            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : `SELL -${contractCount} @ MARKET`}
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : `SELL -${contractCount} @ ${orderTypeLabel}`}
           </Button>
         </div>
         {/* Secondary actions */}
@@ -2413,7 +2637,7 @@ function TradePanel({
           </div>
           <div className="text-[11px] text-white/50 mt-1 tabular-nums">
             {isFutures
-              ? `${parseInt(volume || "0", 10) || 0} contrato(s)${maxContracts != null && maxContracts > 0 ? ` · máx ${maxContracts} (Apex)` : ""}`
+              ? `${parseInt(volume || "0", 10) || 0} contrato(s)${maxContracts != null && maxContracts > 0 ? ` · máx ${maxContracts}` : ""}`
               : hasData ? `≈ $${notional.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Sin precio disponible"}
           </div>
         </div>

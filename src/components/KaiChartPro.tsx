@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { LineType, TooltipShowRule } from 'klinecharts';
+import { TooltipShowRule } from 'klinecharts';
 import type { Overlay, OverlayCreate } from 'klinecharts';
 import { KLineChartPro } from '@klinecharts/pro';
 import type { SymbolInfo, Period } from '@klinecharts/pro';
@@ -14,6 +14,9 @@ import { formatSymbolDisplay } from '@/lib/symbolDisplay';
 import { KaiDatafeed } from '@/lib/chartPro/KaiDatafeed';
 import { CHART_PRO_PERIODS, periodForTimeframe, timeframeFromKeyInput } from '@/lib/chartPro/periods';
 import { useChartDrawings, type SavedDrawing } from '@/hooks/useChartDrawings';
+import { buildKaiTradeBoxes, KAI_TRADES_GROUP } from '@/lib/chartPro/kaiTradeBoxes';
+import { registerKaiPositionBoxOverlay } from '@/lib/chartPro/kaiPositionBox';
+import type { TradingHistoryItem } from '@/types/trading';
 import { FloatingToolbar } from '@/components/FloatingToolbar';
 import { MobileDrawTools } from '@/components/MobileDrawTools';
 import { TimeframeInputModal } from '@/components/TimeframeInputModal';
@@ -34,12 +37,17 @@ function resolveTimezone(tz?: string): string {
 import type { CopyTradingPosition } from '@/modules/copyTrading/types';
 
 const DRAWINGS_GROUP = 'drawing_tools';
-const POSITIONS_GROUP = 'positions';
+
+// Registro global (idempotente) del overlay read-only de trades de Kai.
+registerKaiPositionBoxOverlay();
 
 interface KaiChartProProps {
   symbol?: string | null;
   accountId?: string | null;
   positions?: CopyTradingPosition[];
+  // Trades CERRADOS de la cuenta (historial). Se dibujan como marcadores
+  // LONG/SHORT sobre el chart para el símbolo mostrado.
+  historyTrades?: TradingHistoryItem[];
   timeframe?: string;
   timezone?: string;
   className?: string;
@@ -50,6 +58,10 @@ interface KaiChartProProps {
   onSymbolChange?: (ticker: string) => void;
   // La PeriodBar interna cambió el timeframe → reflejarlo en el terminal.
   onPeriodChange?: (timeframe: string) => void;
+  // Petición de "llevar el chart a este trade" (doble clic en ÓRDENES). from/to
+  // = entrada/salida del trade (para encuadrar la caja). El nonce hace que dos
+  // clics al mismo trade re-disparen el scroll.
+  focusTrade?: { symbol: string; from: number; to: number; nonce: number } | null;
 }
 
 /**
@@ -62,6 +74,7 @@ export function KaiChartPro({
   symbol,
   accountId,
   positions,
+  historyTrades,
   timeframe = '1h',
   timezone,
   className,
@@ -69,6 +82,7 @@ export function KaiChartPro({
   showTpSl = true,
   onSymbolChange,
   onPeriodChange,
+  focusTrade,
 }: KaiChartProProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<KLineChartPro | null>(null);
@@ -147,6 +161,10 @@ export function KaiChartPro({
   // del fork, como los rehidratados que llevan sus propios callbacks).
   // Pila de dibujos en orden de creación → Ctrl+Z deshace el último.
   const drawnIdsRef = useRef<string[]>([]);
+
+  // Ids de las cajas de trades de Kai dibujadas actualmente (grupo kai_trades),
+  // para reconciliar sin borrar las ediciones del usuario.
+  const kaiBoxIdsRef = useRef<string[]>([]);
 
   // Buffer visible del modal "Cambiar Intervalo" (lo que el usuario teclea).
   const [tfInput, setTfInput] = useState<string | null>(null);
@@ -234,7 +252,8 @@ export function KaiChartPro({
     // fundirlo con la paleta near-black. Verde=alza, rojo=baja (dirección). El
     // optional chaining evita lanzar si getChart() aún no está listo.
     chartRef.current.getChart()?.setStyles({
-      grid: { horizontal: { color: 'rgba(255,255,255,0.04)' }, vertical: { color: 'rgba(255,255,255,0.04)' } },
+      // Grid OFF por default (se reactiva desde Setting).
+      grid: { show: false, horizontal: { color: 'rgba(255,255,255,0.04)' }, vertical: { color: 'rgba(255,255,255,0.04)' } },
       candle: {
         bar: {
           upColor: '#2ed68d', downColor: '#ef5350', noChangeColor: '#888888',
@@ -242,7 +261,8 @@ export function KaiChartPro({
           upWickColor: 'rgba(46,214,141,0.75)', downWickColor: 'rgba(239,83,80,0.75)',
         },
         priceMark: {
-          high: { color: 'rgba(226,228,233,0.7)' }, low: { color: 'rgba(226,228,233,0.7)' },
+          // Marcas de máximo/mínimo OFF por default (se reactivan desde Setting).
+          high: { show: false, color: 'rgba(226,228,233,0.7)' }, low: { show: false, color: 'rgba(226,228,233,0.7)' },
           last: {
             upColor: '#2ed68d', downColor: '#ef5350', noChangeColor: '#888888',
             text: { color: '#ffffff' },
@@ -278,6 +298,62 @@ export function KaiChartPro({
     chartRef.current.setSymbol(currentSymbolInfo);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSymbolInfo?.ticker, accountId]);
+
+  // Doble clic en un trade de ÓRDENES → llevar el chart a ese momento. Si el
+  // símbolo cambió, setSymbol recarga el histórico de forma ASÍNCRONA y
+  // applyNewData resetea la vista al final; por eso esperamos a que la data se
+  // ESTABILICE (misma longitud + último timestamp en dos sondeos seguidos)
+  // antes de hacer scroll. Timeout ~3.6s → best-effort al borde (trade fuera de
+  // rango cargado). El nonce permite re-disparar el mismo trade.
+  useEffect(() => {
+    if (!focusTrade || !Number.isFinite(focusTrade.from)) return;
+    const exit = Number.isFinite(focusTrade.to) ? focusTrade.to : focusTrade.from;
+    const mid = (focusTrade.from + exit) / 2;
+    let cancelled = false;
+    let attempts = 0;
+    let prevSig = '';
+    const tick = () => {
+      if (cancelled) return;
+      const chart = chartRef.current?.getChart?.() as any;
+      const data: Array<{ timestamp: number }> = chart?.getDataList?.() ?? [];
+      const vr = chart?.getVisibleRange?.();
+      const vbars = vr ? Math.round(vr.to - vr.from) : 0;
+      // La firma incluye datos (recarga) Y el nº de barras visibles (zoom/
+      // layout): NO medimos el span hasta que el zoom se ha ASENTADO — si no,
+      // sale inflado y el scroll deja el trade fuera de pantalla.
+      const sig = data.length
+        ? `${data.length}:${data[data.length - 1].timestamp}:${vbars}`
+        : '';
+      const stable = sig !== '' && sig === prevSig;
+      prevSig = sig;
+      if (chart && data.length > 0 && vr && vbars > 0 && (stable || attempts >= 24)) {
+        // Centrado PRECISO por ÍNDICE de barra (no por tiempo, que se deforma
+        // con los gaps de finde/noche): scrollToDataIndex ancla el índice en el
+        // BORDE DERECHO, así que right-edge = midIdx + mitad de barras visibles
+        // → la barra del trade queda en el centro exacto.
+        let lo = 0;
+        let hi = data.length - 1;
+        while (lo < hi) {
+          const m = (lo + hi) >> 1;
+          if (data[m].timestamp < mid) lo = m + 1;
+          else hi = m;
+        }
+        const midIdx = lo;
+        // right-edge = midIdx + mitad de barras visibles − 2 (padding derecho
+        // por defecto de klinecharts) → la barra del trade queda en el centro.
+        const rightIdx = midIdx + Math.floor(vbars / 2) - 2;
+        chart.scrollToDataIndex(rightIdx, 400);
+        return;
+      }
+      attempts += 1;
+      setTimeout(tick, 150);
+    };
+    tick();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTrade?.nonce]);
 
   // Cambio de timeframe desde el terminal.
   useEffect(() => {
@@ -442,29 +518,34 @@ export function KaiChartPro({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, canCreate]);
 
-  // Dibuja entry / TP / SL de las posiciones del símbolo actual sobre el chart
-  // interno de klinecharts (expuesto por nuestro fork vía getChart()). Read-only
-  // por ahora (lock: true); respeta los ajustes showPositions / showTpSl.
+  // CADA trade de Kai (posiciones abiertas + trades cerrados del símbolo actual)
+  // se dibuja como caja LONG/SHORT — herramienta `positionLong`/`positionShort`
+  // del fork — con Entry/SL/TP REALES. Grupo propio (no se persiste como dibujo
+  // del usuario). Editables: en vez de borrar-y-redibujar todo el grupo en cada
+  // refresco (lo que borraría el arrastre del usuario), RECONCILIAMOS por id
+  // estable — agregamos las nuevas, quitamos las que desaparecieron y dejamos
+  // intactas las existentes.
   useEffect(() => {
-    const pro = chartRef.current;
-    const chart = pro?.getChart?.();
+    const chart = chartRef.current?.getChart?.();
     if (!chart) return;
-    chart.removeOverlay({ groupId: POSITIONS_GROUP });
-    const symbolPositions = (positions ?? []).filter((p) => p.symbol === symbol);
-    for (const pos of symbolPositions) {
-      const line = (value: number, color: string) =>
-        chart.createOverlay({
-          name: 'horizontalStraightLine',
-          groupId: POSITIONS_GROUP,
-          lock: true,
-          points: [{ value }],
-          styles: { line: { color, style: LineType.Dashed } },
-        });
-      if (showPositions && Number.isFinite(pos.avgPrice)) line(pos.avgPrice, 'rgba(226,228,233,0.7)');
-      if (showTpSl && pos.tp && pos.tp > 0) line(pos.tp, '#2ed68d');
-      if (showTpSl && pos.sl && pos.sl > 0) line(pos.sl, '#ef5350');
+    const desired = buildKaiTradeBoxes({
+      positions,
+      history: historyTrades,
+      symbol,
+      showPositions,
+      showTpSl,
+      now: Date.now(),
+    });
+    const desiredIds = new Set(desired.map((d) => d.id));
+    for (const prevId of kaiBoxIdsRef.current) {
+      if (!desiredIds.has(prevId)) chart.removeOverlay({ id: prevId });
     }
-  }, [positions, symbol, currentSymbolInfo?.ticker, canCreate, showPositions, showTpSl]);
+    const prev = new Set(kaiBoxIdsRef.current);
+    for (const d of desired) {
+      if (!prev.has(d.id)) chart.createOverlay({ ...d.overlay, id: d.id });
+    }
+    kaiBoxIdsRef.current = Array.from(desiredIds);
+  }, [positions, historyTrades, symbol, currentSymbolInfo?.ticker, canCreate, showPositions, showTpSl]);
 
   // Activa una herramienta de dibujo en el chart (usado por la barra flotante de
   // favoritos y análogo a los atajos Alt+tecla).

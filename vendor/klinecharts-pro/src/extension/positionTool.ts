@@ -39,20 +39,41 @@ export function createPositionTemplate (side: Side): OverlayTemplate {
     createPointFigures: ({ coordinates, overlay, precision }) => {
       if (coordinates.length < 2) return []
 
+      // Modo AUTO (trades de Kai): el overlay trae `extendData` con el múltiplo R
+      // REAL del trade (rr) y una etiqueta. `rr === null` → sin zona de target
+      // (posición sin TP). En creación manual no hay extendData → RR por defecto.
+      const ext = (overlay.extendData ?? {}) as {
+        rr?: number | null
+        entryNote?: string
+      }
+      const hasExt = overlay.extendData != null && 'rr' in ext
+      const rr = hasExt ? ext.rr : DEFAULT_RR
+      const showTarget = rr != null && Number.isFinite(rr)
+      const rrVal = showTarget ? (rr as number) : DEFAULT_RR
+
       // Píxeles: Entry = 1er click; magnitud vertical del 2º click = riesgo.
       // La dirección se fuerza por el tipo (long = target arriba / short abajo).
       const entryY = coordinates[0].y
       const dPix = Math.abs(coordinates[1].y - entryY)
       const stopY = isLong ? entryY + dPix : entryY - dPix
-      const targetY = isLong ? entryY - DEFAULT_RR * dPix : entryY + DEFAULT_RR * dPix
+      const targetY = isLong ? entryY - rrVal * dPix : entryY + rrVal * dPix
       const leftX = Math.min(coordinates[0].x, coordinates[1].x)
-      const rightX = Math.max(coordinates[0].x, coordinates[1].x)
+      const rawRight = Math.max(coordinates[0].x, coordinates[1].x)
+      // Ancho mínimo visible para los trades de Kai (auto, con extendData): un
+      // trade de segundos en un TF alto (p.ej. 1m en 1h) sería un sliver de ~2px
+      // y no se verían las zonas/líneas de Entry/TP/SL. Forzamos un ancho mínimo
+      // para que la caja siempre muestre los niveles. El dibujo manual no se toca.
+      const MIN_AUTO_WIDTH_PX = 96
+      const rightX =
+        hasExt && rawRight - leftX < MIN_AUTO_WIDTH_PX
+          ? leftX + MIN_AUTO_WIDTH_PX
+          : rawRight
 
       // Valores (para las etiquetas de precio).
       const entryVal = overlay.points[0].value as number
       const dVal = Math.abs((overlay.points[0].value as number) - (overlay.points[1].value as number))
       const stopVal = isLong ? entryVal - dVal : entryVal + dVal
-      const targetVal = isLong ? entryVal + DEFAULT_RR * dVal : entryVal - DEFAULT_RR * dVal
+      const targetVal = isLong ? entryVal + rrVal * dVal : entryVal - rrVal * dVal
       const pr = (precision as unknown as { price: number }).price
 
       // Rectángulo entre el Entry y el nivel `y` (target o stop).
@@ -63,10 +84,17 @@ export function createPositionTemplate (side: Side): OverlayTemplate {
         ]
       })
 
-      const label = isLong ? 'LONG' : 'SHORT'
+      // Los trades de Kai (auto, traen extendData) NO muestran la palabra
+      // LONG/SHORT — se ven como un trade normal (Entry/Target/Stop). La creación
+      // manual (sin extendData) sí conserva la etiqueta LONG/SHORT.
+      const label = hasExt ? '' : isLong ? 'LONG' : 'SHORT'
+      const entryPrefix = label ? `${label} · ` : ''
+      const entryText = ext.entryNote
+        ? `${entryPrefix}Entry ${entryVal.toFixed(pr)} · ${ext.entryNote}`
+        : `${entryPrefix}Entry ${entryVal.toFixed(pr)}`
       const texts: TextAttrs[] = [
-        { x: leftX + 4, y: targetY, text: `Target ${targetVal.toFixed(pr)}  ·  +${DEFAULT_RR.toFixed(1)}R`, baseline: 'bottom' },
-        { x: leftX + 4, y: entryY, text: `${label} · Entry ${entryVal.toFixed(pr)}`, baseline: 'bottom' },
+        { x: leftX + 4, y: targetY, text: `Target ${targetVal.toFixed(pr)}  ·  +${rrVal.toFixed(1)}R`, baseline: 'bottom' },
+        { x: leftX + 4, y: entryY, text: entryText, baseline: 'bottom' },
         { x: leftX + 4, y: stopY, text: `Stop ${stopVal.toFixed(pr)}  ·  −1R`, baseline: 'top' }
       ]
 
@@ -77,17 +105,18 @@ export function createPositionTemplate (side: Side): OverlayTemplate {
       // Zonas = click-through (ignoreEvent) para no tapar las velas debajo. El
       // arrastre del cuerpo se hace agarrando cualquiera de las 3 LÍNEAS (mueve
       // toda la herramienta, como TradingView); las 2 manijas (entry/stop)
-      // ajustan cada nivel. El texto también ignora eventos.
+      // ajustan cada nivel. El texto también ignora eventos. La zona/línea/label
+      // de target se omiten cuando el trade no tiene TP (rr === null).
       return [
         // Zonas (reward verde entry→target, risk roja entry→stop).
-        { type: 'polygon', ignoreEvent: true, attrs: box(targetY), styles: { style: 'fill', color: FILL_TARGET } },
+        ...(showTarget ? [{ type: 'polygon' as const, ignoreEvent: true, attrs: box(targetY), styles: { style: 'fill' as const, color: FILL_TARGET } }] : []),
         { type: 'polygon', ignoreEvent: true, attrs: box(stopY), styles: { style: 'fill', color: FILL_STOP } },
         // Líneas (interactivas: agarrarlas mueve toda la herramienta).
-        { type: 'line', attrs: [targetLine], styles: { color: COLOR_TARGET, style: 'dashed', size: 1 } },
+        ...(showTarget ? [{ type: 'line' as const, attrs: [targetLine], styles: { color: COLOR_TARGET, style: 'dashed' as const, size: 1 } }] : []),
         { type: 'line', attrs: [stopLine], styles: { color: COLOR_STOP, style: 'dashed', size: 1 } },
         { type: 'line', attrs: [entryLine], styles: { color: COLOR_ENTRY, size: 1 } },
         // Etiquetas.
-        { type: 'text', ignoreEvent: true, attrs: [texts[0]], styles: { color: COLOR_TARGET, size: 11, family: FONT } },
+        ...(showTarget ? [{ type: 'text' as const, ignoreEvent: true, attrs: [texts[0]], styles: { color: COLOR_TARGET, size: 11, family: FONT } }] : []),
         { type: 'text', ignoreEvent: true, attrs: [texts[1]], styles: { color: COLOR_ENTRY, size: 11, family: FONT } },
         { type: 'text', ignoreEvent: true, attrs: [texts[2]], styles: { color: COLOR_STOP, size: 11, family: FONT } }
       ]

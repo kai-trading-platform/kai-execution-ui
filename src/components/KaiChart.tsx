@@ -16,6 +16,12 @@ import { useUpdateTradingPositionStops } from '@/hooks/useUpdateTradingPositionS
 import { useMarketCandles, fetchCandles, type MarketCandle } from '@/modules/copyTrading/hooks/useMarketCandles';
 import { useMarketSocket } from '@/contexts/MarketSocketContext';
 import { formatSymbolDisplay, symbolIcon } from '@/lib/symbolDisplay';
+import {
+  registerTradeMarkerOverlay,
+  buildTradeHistoryOverlays,
+  TRADE_MARKERS_GROUP,
+} from '@/lib/chartPro/tradeMarkers';
+import type { TradingHistoryItem } from '@/types/trading';
 import type { CopyTradingPosition } from '@/modules/copyTrading/types';
 
 const TIMEFRAMES = ['1m', '5m', '10m', '15m', '30m', '1h', '2h', '4h', 'D', 'W', 'M'] as const;
@@ -112,11 +118,14 @@ function ensureTriangleOverlay() {
   });
 }
 ensureTriangleOverlay();
+registerTradeMarkerOverlay();
 
 interface KaiChartProps {
   symbol?: string | null;
   accountId?: string | null;
   positions?: CopyTradingPosition[];
+  // Trades CERRADOS (historial) → marcadores LONG/SHORT sobre el chart.
+  historyTrades?: TradingHistoryItem[];
   timeframe?: string;
   onSymbolChange?: (symbol: string) => void;
   onAccountChange?: (accountId: string) => void;
@@ -202,6 +211,7 @@ export function KaiChart({
   symbol,
   accountId,
   positions,
+  historyTrades,
   timeframe: timeframeProp,
   onTimeframeChange,
   showPositions = true,
@@ -572,6 +582,18 @@ export function KaiChart({
     }
     setPosLabels(labels);
   }, [symbolPositions, pricePrecision, showPositions, showTpSl]);
+
+  // Marcadores de trades CERRADOS (historial) del símbolo actual: flecha
+  // LONG/SHORT en la entrada, coloreada por PnL, con etiqueta del PnL.
+  // Read-only, grupo propio → no interfiere con dibujos ni posiciones.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    chart.removeOverlay({ groupId: TRADE_MARKERS_GROUP });
+    for (const o of buildTradeHistoryOverlays(historyTrades, symbol)) {
+      chart.createOverlay(o);
+    }
+  }, [historyTrades, symbol]);
 
   useEffect(() => {
     const chart = chartRef.current;
