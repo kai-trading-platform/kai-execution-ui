@@ -20,6 +20,10 @@ export interface KaiDatafeedDeps {
   getSymbols: () => SymbolInfo[];
   subscribeSocket: (accountId: string, symbol: string) => void;
   unsubscribeSocket: (accountId: string, symbol: string) => void;
+  // Se dispara cada vez que getHistoryKLineData termina (con el nº de velas
+  // devueltas). El overlay de "Cargando velas…" del chart lo usa para no dejar
+  // ver el estado vacío ("bolsa") mientras se trae el histórico.
+  onHistoryLoaded?: (count: number) => void;
 }
 
 interface ActiveSub {
@@ -33,6 +37,12 @@ const HISTORY_COUNT = 20_000;
 export class KaiDatafeed implements Datafeed {
   private readonly deps: KaiDatafeedDeps;
   private readonly subs = new Map<string, ActiveSub>(); // key: ticker (nombre raw del bróker)
+  // Vela más ANTIGUA ya servida por (ticker|período). El backend solo sirve las
+  // últimas N velas (ignora el rango pedido), así que cuando klinecharts-pro pagina
+  // (load-more, scroll a la izquierda) pidiendo velas más viejas que esto, NO hay
+  // histórico que dar: re-servir las mismas hacía que el fork las PREPENDARA →
+  // chart duplicado (Bug B). Guardamos el borde para responder [] a esas peticiones.
+  private readonly earliestServed = new Map<string, number>();
 
   constructor(deps: KaiDatafeedDeps) {
     this.deps = deps;
@@ -50,9 +60,34 @@ export class KaiDatafeed implements Datafeed {
     );
   }
 
-  async getHistoryKLineData(symbol: SymbolInfo, period: Period): Promise<KLineData[]> {
+  async getHistoryKLineData(
+    symbol: SymbolInfo,
+    period: Period,
+    from?: number,
+    to?: number,
+  ): Promise<KLineData[]> {
     const accountId = this.deps.getAccountId();
-    if (!accountId || !symbol?.ticker) return [];
+    if (!accountId || !symbol?.ticker) {
+      this.deps.onHistoryLoaded?.(0);
+      return [];
+    }
+
+    // LOAD-MORE (paginación): klinecharts-pro llama esto al hacer scroll a la
+    // izquierda pidiendo velas ANTERIORES a `to`. El backend solo sirve las últimas
+    // N (ignora el rango) → re-servirlas hacía que el fork las PREPENDARA y el mismo
+    // tramo se repitiera (Bug B: eje de tiempo desordenado). Si ya servimos y piden
+    // más viejo que nuestro borde, no hay histórico → []. El load inicial y el
+    // heal-reload (llaman sin `to`, o con to ≈ ahora > borde) pasan normal.
+    const key = `${symbol.ticker}|${period.text}`;
+    const earliest = this.earliestServed.get(key);
+    if (
+      earliest !== undefined &&
+      Number.isFinite(to) &&
+      (to as number) <= earliest
+    ) {
+      this.deps.onHistoryLoaded?.(0);
+      return [];
+    }
 
     // Un blip de red al cargar hacía que fetchCandles fallara/volviera vacío →
     // el fork llama applyNewData([], false) y el chart queda con 1 sola vela.
@@ -64,7 +99,10 @@ export class KaiDatafeed implements Datafeed {
       } catch {
         candles = [];
       }
-      if (candles.length > 0) break;
+      // >1: una respuesta de 0 ó 1 vela deja el chart "en blanco/1 vela"; se
+      // reintenta (blip de red o fuente aún fría) para no forzar al usuario a
+      // togglear el TF. Un símbolo con ≤1 vela real igual sale tras los 3 intentos.
+      if (candles.length > 1) break;
       if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }
     const data: KLineData[] = candles.map((c) => ({
@@ -76,12 +114,19 @@ export class KaiDatafeed implements Datafeed {
       volume: c.volume,
     }));
 
+    // Registra el borde (vela más antigua servida) para responder [] a futuros
+    // load-more más viejos que esto (ver guard arriba). `data` viene ascendente.
+    if (data.length) {
+      this.earliestServed.set(key, data[0].timestamp);
+    }
+
     // Semilla de la vela en curso para el bucketing de ticks.
     const sub = this.subs.get(symbol.ticker);
     if (sub) {
       sub.period = period;
       sub.lastBar = data.length ? data[data.length - 1] : null;
     }
+    this.deps.onHistoryLoaded?.(data.length);
     return data;
   }
 
