@@ -81,6 +81,16 @@ interface KaiChartProProps {
   orderPreview?: { side: 'buy' | 'sell'; entry: number; tp: number; sl: number } | null;
   onOrderTpChange?: (price: number) => void;
   onOrderSlChange?: (price: number) => void;
+  // SL/TP ARRASTRABLES de posiciones ABIERTAS: cada línea lleva el ticket; al
+  // soltar se llama onPositionStopChange para modificar el stop en el bróker.
+  positionStops?: Array<{
+    ticket: string;
+    side: 'LONG' | 'SHORT';
+    entry: number;
+    sl: number; // 0 = sin SL
+    tp: number; // 0 = sin TP
+  }>;
+  onPositionStopChange?: (ticket: string, kind: 'tp' | 'sl', price: number) => void;
 }
 
 /**
@@ -107,6 +117,8 @@ export function KaiChartPro({
   orderPreview,
   onOrderTpChange,
   onOrderSlChange,
+  positionStops,
+  onPositionStopChange,
 }: KaiChartProProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<KLineChartPro | null>(null);
@@ -193,18 +205,42 @@ export function KaiChartPro({
   const onOrderSlRef = useRef(onOrderSlChange);
   onOrderSlRef.current = onOrderSlChange;
 
+  // SL/TP arrastrables de posiciones abiertas: ids de overlay por `${ticket}:${kind}`,
+  // callback fresco y set de tickets con drag en curso (para no recrear bajo el dedo).
+  const positionStopIdsRef = useRef<Map<string, string>>(new Map());
+  const positionDraggingRef = useRef<Set<string>>(new Set());
+  const onPositionStopRef = useRef(onPositionStopChange);
+  onPositionStopRef.current = onPositionStopChange;
+  // Nonce para reconciliar la línea a la verdad del bróker al soltar (si el modify
+  // se rechaza, positionStops no cambia y la línea debe volver a su sitio real).
+  const [posReconcile, setPosReconcile] = useState(0);
+
   // Handler global (registrado una vez) que recibe los cambios de nivel al
-  // arrastrar TP/SL y los sincroniza con el formulario. Marca orderDraggingRef
-  // para que el effect no recree los overlays bajo el dedo; al soltar fuerza un
-  // redraw para que la sombra desaparezca aunque no lleguen ticks.
+  // arrastrar. Con ticket = SL/TP de una POSICIÓN ABIERTA → modificar en bróker;
+  // sin ticket = preview de orden nueva → sincronizar el formulario.
   useEffect(() => {
-    setOrderLevelChangeHandler((kind, value, phase) => {
+    setOrderLevelChangeHandler((kind, value, phase, ticket) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const chart = chartRef.current?.getChart?.() as any;
+      if (ticket) {
+        const key = `${ticket}:${kind}`;
+        if (phase === 'end') {
+          positionDraggingRef.current.delete(key);
+          onPositionStopRef.current?.(ticket, kind, value);
+          const id = positionStopIdsRef.current.get(key);
+          if (chart && id) chart.overrideOverlay({ id });
+          // Reconciliar: re-corre el effect para dejar la línea en el SL/TP REAL
+          // (revierte si el bróker rechazó; se re-alinea cuando llega el refetch).
+          setPosReconcile((n) => n + 1);
+        } else {
+          positionDraggingRef.current.add(key);
+        }
+        return;
+      }
       orderDraggingRef.current = phase !== 'end';
       if (kind === 'tp') onOrderTpRef.current?.(value);
       else onOrderSlRef.current?.(value);
       if (phase === 'end') {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const chart = chartRef.current?.getChart?.() as any;
         const id = kind === 'tp' ? orderTpIdRef.current : orderSlIdRef.current;
         if (chart && id) chart.overrideOverlay({ id });
       }
@@ -679,6 +715,52 @@ export function KaiChartPro({
     sync(orderTpIdRef, opTp > 0, opTp, ORDER_LEVEL_LINE_NAME, { kind: 'tp', entryValue: opEntry }, false);
     sync(orderSlIdRef, opSl > 0, opSl, ORDER_LEVEL_LINE_NAME, { kind: 'sl', entryValue: opEntry }, false);
   }, [opActive, opEntry, opTp, opSl]);
+
+  // SL/TP ARRASTRABLES de posiciones abiertas: una línea `orderLevelLine` por
+  // nivel (con el ticket en extendData). Al soltar, el handler global modifica el
+  // stop en el bróker. No recrea la línea que el usuario está arrastrando ahora.
+  const posStopsKey = JSON.stringify(positionStops ?? []);
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chart = chartRef.current?.getChart?.() as any;
+    if (!chart) return;
+    const ids = positionStopIdsRef.current;
+    const stops = positionStops ?? [];
+    const data: Array<{ timestamp: number }> = chart.getDataList?.() ?? [];
+    if (!data.length && stops.length) return;
+    const anchor = data.length
+      ? data[Math.max(0, data.length - 8)]?.timestamp ?? data[data.length - 1].timestamp
+      : 0;
+
+    const desired = new Map<string, { value: number; entry: number; kind: 'tp' | 'sl'; ticket: string }>();
+    for (const p of stops) {
+      if (p.tp > 0) desired.set(`${p.ticket}:tp`, { value: p.tp, entry: p.entry, kind: 'tp', ticket: p.ticket });
+      if (p.sl > 0) desired.set(`${p.ticket}:sl`, { value: p.sl, entry: p.entry, kind: 'sl', ticket: p.ticket });
+    }
+
+    // Quitar overlays que ya no se desean (y no se están arrastrando).
+    for (const [key, id] of Array.from(ids.entries())) {
+      if (!desired.has(key) && !positionDraggingRef.current.has(key)) {
+        chart.removeOverlay({ id });
+        ids.delete(key);
+      }
+    }
+    // Crear/actualizar los deseados (salvo el que está bajo el dedo).
+    for (const [key, d] of desired) {
+      if (positionDraggingRef.current.has(key)) continue;
+      const points = [{ timestamp: anchor, value: d.value }];
+      const extendData = { kind: d.kind, entryValue: d.entry, ticket: d.ticket };
+      const existing = ids.get(key);
+      if (!existing) {
+        const id = chart.createOverlay({ name: ORDER_LEVEL_LINE_NAME, points, lock: false, extendData });
+        const resolved = typeof id === 'string' ? id : Array.isArray(id) ? id[0] : null;
+        if (resolved) ids.set(key, resolved);
+      } else {
+        chart.overrideOverlay({ id: existing, points, extendData });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posStopsKey, posReconcile]);
 
   // Activa una herramienta de dibujo en el chart (usado por la barra flotante de
   // favoritos y análogo a los atajos Alt+tecla).

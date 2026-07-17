@@ -31,14 +31,26 @@ const AXIS_TAG_FONT = 'Helvetica Neue, Helvetica, Arial, sans-serif';
 const ROW_H = 20;
 const AXIS_GAP = 2;
 
-// ── Estado de arrastre (para pintar la sombra solo del lado que se mueve) ───────
-let draggingKind: 'tp' | 'sl' | null = null;
-export function setOrderPreviewDragging(kind: 'tp' | 'sl' | null): void {
-  draggingKind = kind;
+// ── Estado de arrastre (para pintar la sombra solo del overlay que se mueve) ────
+// Token = `${ticket ?? 'order'}:${kind}` — así arrastrar el SL de UNA posición no
+// sombrea el SL de otra ni el de la orden nueva.
+let draggingToken: string | null = null;
+function dragToken(ticket: string | undefined, kind: 'tp' | 'sl'): string {
+  return `${ticket ?? 'order'}:${kind}`;
+}
+export function setOrderPreviewDragging(token: string | null): void {
+  draggingToken = token;
 }
 
 // ── Handler que la app registra para recibir los cambios de nivel al arrastrar ──
-type LevelChange = (kind: 'tp' | 'sl', value: number, phase: 'move' | 'end') => void;
+// ticket presente = SL/TP de una POSICIÓN ABIERTA (modificar en el bróker);
+// ausente = preview de orden NUEVA (sincronizar el formulario).
+type LevelChange = (
+  kind: 'tp' | 'sl',
+  value: number,
+  phase: 'move' | 'end',
+  ticket?: string,
+) => void;
 let levelChangeHandler: LevelChange | null = null;
 export function setOrderLevelChangeHandler(fn: LevelChange | null): void {
   levelChangeHandler = fn;
@@ -130,28 +142,32 @@ export function registerOrderPreviewBoxOverlay(): void {
     // Al arrastrar (klinecharts ya movió el punto) avisamos a la app y marcamos la
     // sombra. Devolvemos false para no persistir como dibujo.
     onPressedMoving: (event) => {
-      const ext = (event.overlay?.extendData ?? {}) as { kind?: 'tp' | 'sl' };
+      const ext = (event.overlay?.extendData ?? {}) as { kind?: 'tp' | 'sl'; ticket?: string };
       const kind = ext.kind;
       const value = event.overlay?.points?.[0]?.value as number | undefined;
       if (kind && Number.isFinite(value)) {
-        setOrderPreviewDragging(kind);
-        levelChangeHandler?.(kind, value as number, 'move');
+        setOrderPreviewDragging(dragToken(ext.ticket, kind));
+        levelChangeHandler?.(kind, value as number, 'move', ext.ticket);
       }
       return false;
     },
     onPressedMoveEnd: (event) => {
-      const ext = (event.overlay?.extendData ?? {}) as { kind?: 'tp' | 'sl' };
+      const ext = (event.overlay?.extendData ?? {}) as { kind?: 'tp' | 'sl'; ticket?: string };
       const kind = ext.kind;
       const value = event.overlay?.points?.[0]?.value as number | undefined;
       if (kind && Number.isFinite(value)) {
-        levelChangeHandler?.(kind, value as number, 'end');
+        levelChangeHandler?.(kind, value as number, 'end', ext.ticket);
       }
       setOrderPreviewDragging(null);
       return false;
     },
     createPointFigures: ({ coordinates, overlay, precision, bounding, yAxis }) => {
       if (coordinates.length < 1) return [];
-      const ext = (overlay.extendData ?? {}) as { kind?: 'tp' | 'sl'; entryValue?: number };
+      const ext = (overlay.extendData ?? {}) as {
+        kind?: 'tp' | 'sl';
+        entryValue?: number;
+        ticket?: string;
+      };
       const kind = ext.kind ?? 'tp';
       const isTp = kind === 'tp';
       const color = isTp ? COLOR_TP : COLOR_SL;
@@ -164,9 +180,9 @@ export function registerOrderPreviewBoxOverlay(): void {
 
       const figs: OverlayFigure[] = [];
 
-      // Sombra SOLO mientras se arrastra ESTE nivel: banda de ancho completo desde
-      // la entrada (convertida a pixel) hasta la línea.
-      if (draggingKind === kind && Number.isFinite(entryVal)) {
+      // Sombra SOLO mientras se arrastra ESTE overlay (token): banda de ancho
+      // completo desde la entrada (convertida a pixel) hasta la línea.
+      if (draggingToken === dragToken(ext.ticket, kind) && Number.isFinite(entryVal)) {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const conv = (yAxis as any)?.convertToPixel;
         const entryY = typeof conv === 'function' ? conv.call(yAxis, entryVal) : null;
@@ -193,16 +209,22 @@ export function registerOrderPreviewBoxOverlay(): void {
         styles: { color, style: 'dashed', size: 1, dashedValue: [4, 3] },
       });
 
-      // Etiqueta a la derecha: distancia en puntos respecto a la entrada.
-      const dist = Number.isFinite(entryVal)
-        ? `  ${isTp ? '+' : '-'}${Math.abs(val - (entryVal as number)).toFixed(pr)}`
-        : '';
-      figs.push(rightLabel(axisX, y, `${isTp ? 'TP' : 'SL'}${dist}`, color));
+      // Etiqueta a la derecha SOLO para la orden nueva; en posiciones abiertas
+      // (con ticket) las etiquetas y el tag del eje los pone kaiPositionBox → aquí
+      // solo la línea draggable + la sombra, para no duplicar.
+      if (!ext.ticket) {
+        const dist = Number.isFinite(entryVal)
+          ? `  ${isTp ? '+' : '-'}${Math.abs(val - (entryVal as number)).toFixed(pr)}`
+          : '';
+        figs.push(rightLabel(axisX, y, `${isTp ? 'TP' : 'SL'}${dist}`, color));
+      }
       return figs;
     },
     createYAxisFigures: ({ coordinates, overlay, precision, bounding, thousandsSeparator }) => {
       if (coordinates.length < 1) return [];
-      const ext = (overlay.extendData ?? {}) as { kind?: 'tp' | 'sl' };
+      const ext = (overlay.extendData ?? {}) as { kind?: 'tp' | 'sl'; ticket?: string };
+      // El tag del eje de una posición abierta lo dibuja kaiPositionBox.
+      if (ext.ticket) return [];
       const color = ext.kind === 'sl' ? COLOR_SL : COLOR_TP;
       const val = overlay.points[0].value as number;
       const pr = (precision as unknown as { price: number }).price;

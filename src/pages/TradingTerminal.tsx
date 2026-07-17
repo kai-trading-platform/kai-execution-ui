@@ -861,6 +861,37 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     return () => setKaiPositionCloseHandler(null);
   }, [uiPositions, handleClosePosition]);
 
+  // SL/TP ARRASTRABLES de posiciones abiertas del SÍMBOLO mostrado. Cada línea
+  // lleva el ticket; al soltar se modifica el stop en el bróker (handleUpdateStops).
+  const positionStops = useMemo(
+    () =>
+      uiPositions
+        .filter(
+          (p) =>
+            formatSymbolDisplay(p.symbol) === formatSymbolDisplay(selectedSymbol) &&
+            p.avgPrice > 0,
+        )
+        .map((p) => ({
+          ticket: String(p.id),
+          side: p.side,
+          entry: p.avgPrice,
+          sl: p.sl && p.sl > 0 ? p.sl : 0,
+          tp: p.tp && p.tp > 0 ? p.tp : 0,
+        })),
+    [uiPositions, selectedSymbol],
+  );
+
+  const handlePositionStopChange = useCallback(
+    (ticket: string, kind: "tp" | "sl", price: number) => {
+      const pos = uiPositions.find((p) => String(p.id) === ticket);
+      if (!pos) return;
+      const sl = kind === "sl" ? price : pos.sl ?? 0;
+      const tp = kind === "tp" ? price : pos.tp ?? 0;
+      void handleUpdateStops(pos, sl, tp);
+    },
+    [uiPositions, handleUpdateStops],
+  );
+
   const totalPnl = useMemo(
     () => uiPositions.reduce((acc, p) => acc + (p.openPnlUsd ?? 0), 0),
     [uiPositions],
@@ -1129,6 +1160,8 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                   orderPreview={orderPreview}
                   onOrderTpChange={(p) => setTakeProfitPrice(roundToTickStr(p))}
                   onOrderSlChange={(p) => setStopLossPrice(roundToTickStr(p))}
+                  positionStops={positionStops}
+                  onPositionStopChange={handlePositionStopChange}
                 />
               </ErrorBoundary>
             ) : (
