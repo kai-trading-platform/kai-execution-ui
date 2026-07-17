@@ -21,6 +21,7 @@ import {
   createSingleLineOptions, createMoreLineOptions,
   createPolygonOptions, createFibonacciOptions, createWaveOptions,
   createPositionOptions,
+  createMeasureOptions,
   createMagnetOptions,
   Icon
 } from './icons'
@@ -44,6 +45,7 @@ const DrawingBar: Component<DrawingBarProps> = props => {
   const [fibonacciIcon, setFibonacciIcon] = createSignal('fibonacciLine')
   const [waveIcon, setWaveIcon] = createSignal('xabcd')
   const [positionIcon, setPositionIcon] = createSignal('positionLong')
+  const [measureIcon, setMeasureIcon] = createSignal('priceRange')
 
   const [modeIcon, setModeIcon] = createSignal('weak_magnet')
   const [mode, setMode] = createSignal('normal')
@@ -81,7 +83,8 @@ const DrawingBar: Component<DrawingBarProps> = props => {
       { key: 'polygon', icon: polygonIcon(), list: createPolygonOptions(props.locale), setter: setPolygonIcon },
       { key: 'fibonacci', icon: fibonacciIcon(), list: createFibonacciOptions(props.locale), setter: setFibonacciIcon },
       { key: 'wave', icon: waveIcon(), list: createWaveOptions(props.locale), setter: setWaveIcon },
-      { key: 'position', icon: positionIcon(), list: createPositionOptions(props.locale), setter: setPositionIcon }
+      { key: 'position', icon: positionIcon(), list: createPositionOptions(props.locale), setter: setPositionIcon },
+      { key: 'measure', icon: measureIcon(), list: createMeasureOptions(props.locale), setter: setMeasureIcon }
     ]
   })
 

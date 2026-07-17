@@ -18,6 +18,7 @@ import abcd from './abcd'
 import xabcd from './xabcd'
 import positionLong from './positionLong'
 import positionShort from './positionShort'
+import priceRange from './priceRange'
 
 const overlays = [
   arrow,
@@ -25,7 +26,7 @@ const overlays = [
   fibonacciCircle, fibonacciSegment, fibonacciSpiral,
   fibonacciSpeedResistanceFan, fibonacciExtension, gannBox,
   threeWaves, fiveWaves, eightWaves, anyWaves, abcd, xabcd,
-  positionLong, positionShort
+  positionLong, positionShort, priceRange
 ]
 
 export default overlays

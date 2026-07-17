@@ -117,5 +117,6 @@
   "log": "Log",
   "reverse_coordinate": "Reverse Coordinate",
   "grid_show": "Show Grids",
-  "restore_default": "Restore Defaults"
+  "restore_default": "Restore Defaults",
+  "price_range": "Price Range"
 }

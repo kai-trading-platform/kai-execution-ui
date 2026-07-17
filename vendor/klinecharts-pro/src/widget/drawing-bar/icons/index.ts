@@ -47,6 +47,7 @@ import abcd from './abcd'
 import xabcd from './xabcd'
 import positionLong from './positionLong'
 import positionShort from './positionShort'
+import priceRange from './priceRange'
 
 import weakMagnet from './weakMagnet'
 import strongMagnet from './strongMagnet'
@@ -97,6 +98,7 @@ export const mapping = {
   xabcd,
   positionLong,
   positionShort,
+  priceRange,
   weak_magnet: weakMagnet,
   strong_magnet: strongMagnet,
   lock,
@@ -166,6 +168,13 @@ export function createPositionOptions (locale: string): SelectDataSourceItem[] {
   return [
     { key: 'positionLong', text: i18n('long_position', locale) },
     { key: 'positionShort', text: i18n('short_position', locale) }
+  ]
+}
+
+// Fork Kai: herramientas de MEDICIÓN (Price Range), solo análisis.
+export function createMeasureOptions (locale: string): SelectDataSourceItem[] {
+  return [
+    { key: 'priceRange', text: i18n('price_range', locale) }
   ]
 }
 

@@ -10,7 +10,6 @@
   "save": "保存",
   "confirm": "确定",
   "cancel": "取消",
-
   "ma": "MA(移动平均线)",
   "ema": "EMA(指数平滑移动平均线)",
   "sma": "SMA",
@@ -37,7 +36,6 @@
   "roc": "ROC(变动率指标)",
   "pvt": "PVT(价量趋势指标)",
   "ao": "AO(动量震荡指标)",
-
   "utc": "世界统一时间",
   "honolulu": "(UTC-10) 檀香山",
   "juneau": "(UTC-8) 朱诺",
@@ -56,7 +54,6 @@
   "tokyo": "(UTC+9) 东京",
   "sydney": "(UTC+10) 悉尼",
   "norfolk": "(UTC+12) 诺福克岛",
-
   "horizontal_straight_line": "水平直线",
   "horizontal_ray_line": "水平射线",
   "horizontal_segment": "水平线段",
@@ -88,13 +85,10 @@
   "any_waves": "任意浪",
   "abcd": "ABCD形态",
   "xabcd": "XABCD形态",
-
   "long_position": "做多头寸",
   "short_position": "做空头寸",
-
   "weak_magnet": "弱磁模式",
   "strong_magnet": "强磁模式",
-
   "symbol_search": "商品搜索",
   "symbol_code": "商品代码",
   "params_1": "参数1",
@@ -104,7 +98,6 @@
   "params_5": "参数5",
   "period": "周期",
   "standard_deviation": "标准差",
-
   "candle_type": "蜡烛图类型",
   "candle_solid": "全实心",
   "candle_stroke": "全空心",
@@ -112,7 +105,6 @@
   "candle_down_stroke": "跌空心",
   "ohlc": "OHLC",
   "area": "面积图",
-  
   "ohlc_legend_show": "显示OHLC数据",
   "indicator_legend_show": "显示指标数据",
   "last_price_show": "最新价显示",
@@ -125,5 +117,6 @@
   "log": "对数轴",
   "reverse_coordinate": "倒置坐标",
   "grid_show": "网格线显示",
-  "restore_default": "恢复默认"
+  "restore_default": "恢复默认",
+  "price_range": "价格区间"
 }
