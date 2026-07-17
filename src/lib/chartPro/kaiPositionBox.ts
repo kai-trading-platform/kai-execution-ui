@@ -234,7 +234,13 @@ export function registerKaiPositionBoxOverlay(): void {
         figs.push(levelLine(targetY, COLOR_TARGET, true, lineRight));
       if (showLabels && hasStop)
         figs.push(levelLine(stopY, COLOR_STOP, true, lineRight));
-      figs.push(levelLine(entryY, COLOR_ENTRY_LINE, false, lineRight));
+      // La línea de ENTRADA solo en posiciones ABIERTAS. En trades CERRADOS debe
+      // DESAPARECER al instante (feedback usuario 2026-07-17): antes un trade
+      // cerrado sin SL/TP degeneraba a una línea de entry suelta que quedaba
+      // colgada en el chart tras cerrar. Las zonas (si hay SL/TP) ya marcan el
+      // trade pasado sin ensuciar con la línea.
+      if (showLabels)
+        figs.push(levelLine(entryY, COLOR_ENTRY_LINE, false, lineRight));
 
       if (!showLabels) return figs;
 
