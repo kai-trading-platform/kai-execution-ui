@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronsRight } from 'lucide-react';
 import { TooltipShowRule } from 'klinecharts';
 import type { Overlay, OverlayCreate } from 'klinecharts';
 import { KLineChartPro } from '@klinecharts/pro';
@@ -16,6 +17,12 @@ import { CHART_PRO_PERIODS, periodForTimeframe, timeframeFromKeyInput } from '@/
 import { useChartDrawings, type SavedDrawing } from '@/hooks/useChartDrawings';
 import { buildKaiTradeBoxes, KAI_TRADES_GROUP } from '@/lib/chartPro/kaiTradeBoxes';
 import { registerKaiPositionBoxOverlay } from '@/lib/chartPro/kaiPositionBox';
+import {
+  registerOrderPreviewBoxOverlay,
+  ORDER_ENTRY_LINE_NAME,
+  ORDER_LEVEL_LINE_NAME,
+  setOrderLevelChangeHandler,
+} from '@/lib/chartPro/orderPreviewBox';
 import type { TradingHistoryItem } from '@/types/trading';
 import { FloatingToolbar } from '@/components/FloatingToolbar';
 import { MobileDrawTools } from '@/components/MobileDrawTools';
@@ -40,6 +47,8 @@ const DRAWINGS_GROUP = 'drawing_tools';
 
 // Registro global (idempotente) del overlay read-only de trades de Kai.
 registerKaiPositionBoxOverlay();
+// Overlay editable de preview de orden (TP/SL arrastrables).
+registerOrderPreviewBoxOverlay();
 
 interface KaiChartProProps {
   symbol?: string | null;
@@ -54,6 +63,9 @@ interface KaiChartProProps {
   // Mostrar/ocultar líneas de entrada y TP/SL (ajustes del terminal).
   showPositions?: boolean;
   showTpSl?: boolean;
+  // Spec del símbolo activo (futuros) para calcular el USD en SL/TP de las cajas.
+  tickSize?: number | null;
+  tickValue?: number | null;
   // El buscador interno de Pro cambió el símbolo → que el terminal lo siga.
   onSymbolChange?: (ticker: string) => void;
   // La PeriodBar interna cambió el timeframe → reflejarlo en el terminal.
@@ -62,6 +74,13 @@ interface KaiChartProProps {
   // = entrada/salida del trade (para encuadrar la caja). El nonce hace que dos
   // clics al mismo trade re-disparen el scroll.
   focusTrade?: { symbol: string; from: number; to: number; nonce: number } | null;
+  // Preview EDITABLE de una orden que aún no se ha enviado: zona verde (entry→tp)
+  // y roja (entry→sl) con handles arrastrables. Al arrastrar se llama a
+  // onOrderTpChange/onOrderSlChange para sincronizar el formulario del terminal.
+  // null / undefined = sin preview (ni TP ni SL activos).
+  orderPreview?: { side: 'buy' | 'sell'; entry: number; tp: number; sl: number } | null;
+  onOrderTpChange?: (price: number) => void;
+  onOrderSlChange?: (price: number) => void;
 }
 
 /**
@@ -80,13 +99,24 @@ export function KaiChartPro({
   className,
   showPositions = true,
   showTpSl = true,
+  tickSize = null,
+  tickValue = null,
   onSymbolChange,
   onPeriodChange,
   focusTrade,
+  orderPreview,
+  onOrderTpChange,
+  onOrderSlChange,
 }: KaiChartProProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<KLineChartPro | null>(null);
   const datafeedRef = useRef<KaiDatafeed | null>(null);
+
+  // Overlay de carga: tapa el estado vacío ("bolsa") de klinecharts-pro
+  // mientras el datafeed trae el histórico (getHistoryKLineData). Arranca en
+  // true (mount) y al cambiar de símbolo; el datafeed lo apaga vía
+  // onHistoryLoaded cuando la respuesta llega (haya velas o no).
+  const [loadingHistory, setLoadingHistory] = useState(true);
 
   const { symbols: accountSymbols } = useAccountSymbols(accountId ?? undefined);
   const { ticks, subscribe, unsubscribe, isConnected } = useMarketSocket();
@@ -150,6 +180,37 @@ export function KaiChartPro({
   saveDrawingRef.current = saveDrawing;
   const removeDrawingRef = useRef(removeDrawing);
   removeDrawingRef.current = removeDrawing;
+
+  // Preview de orden editable: ids de los 3 overlays de 1 punto (entry/tp/sl),
+  // flag de "arrastrando ahora" (evita que el effect los recree bajo el dedo) y
+  // callbacks frescos.
+  const orderEntryIdRef = useRef<string | null>(null);
+  const orderTpIdRef = useRef<string | null>(null);
+  const orderSlIdRef = useRef<string | null>(null);
+  const orderDraggingRef = useRef(false);
+  const onOrderTpRef = useRef(onOrderTpChange);
+  onOrderTpRef.current = onOrderTpChange;
+  const onOrderSlRef = useRef(onOrderSlChange);
+  onOrderSlRef.current = onOrderSlChange;
+
+  // Handler global (registrado una vez) que recibe los cambios de nivel al
+  // arrastrar TP/SL y los sincroniza con el formulario. Marca orderDraggingRef
+  // para que el effect no recree los overlays bajo el dedo; al soltar fuerza un
+  // redraw para que la sombra desaparezca aunque no lleguen ticks.
+  useEffect(() => {
+    setOrderLevelChangeHandler((kind, value, phase) => {
+      orderDraggingRef.current = phase !== 'end';
+      if (kind === 'tp') onOrderTpRef.current?.(value);
+      else onOrderSlRef.current?.(value);
+      if (phase === 'end') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const chart = chartRef.current?.getChart?.() as any;
+        const id = kind === 'tp' ? orderTpIdRef.current : orderSlIdRef.current;
+        if (chart && id) chart.overrideOverlay({ id });
+      }
+    });
+    return () => setOrderLevelChangeHandler(null);
+  }, []);
 
   // Guardia: durante la rehidratación limpiamos+recreamos overlays y NO queremos
   // que esos removes/creates programáticos se persistan (borrarían el símbolo
@@ -216,6 +277,7 @@ export function KaiChartPro({
       getSymbols: () => symbolInfosRef.current,
       subscribeSocket: (a, s) => subscribeRef.current(a, s),
       unsubscribeSocket: (a, s) => unsubscribeRef.current(a, s),
+      onHistoryLoaded: () => setLoadingHistory(false),
     });
   }
 
@@ -295,6 +357,9 @@ export function KaiChartPro({
   // Cambio de símbolo (o de cuenta → re-fetch con el nuevo accountId).
   useEffect(() => {
     if (!chartRef.current || !currentSymbolInfo) return;
+    // Volvemos a mostrar el overlay: setSymbol dispara un getHistoryKLineData
+    // nuevo y no queremos que asome la "bolsa" durante el re-fetch.
+    setLoadingHistory(true);
     chartRef.current.setSymbol(currentSymbolInfo);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSymbolInfo?.ticker, accountId]);
@@ -341,7 +406,13 @@ export function KaiChartPro({
         const midIdx = lo;
         // right-edge = midIdx + mitad de barras visibles − 2 (padding derecho
         // por defecto de klinecharts) → la barra del trade queda en el centro.
-        const rightIdx = midIdx + Math.floor(vbars / 2) - 2;
+        // Clamp a [midIdx, data.length−1]: en TF gruesos (5m/D/W) o trades cerca
+        // del borde, rightIdx se salía de rango y scrollToDataIndex clampeaba al
+        // final (parecía "no navega"). Así la barra del trade SIEMPRE queda visible.
+        const rightIdx = Math.max(
+          midIdx,
+          Math.min(data.length - 1, midIdx + Math.floor(vbars / 2) - 2),
+        );
         chart.scrollToDataIndex(rightIdx, 400);
         return;
       }
@@ -535,6 +606,8 @@ export function KaiChartPro({
       showPositions,
       showTpSl,
       now: Date.now(),
+      tickSize,
+      tickValue,
     });
     const desiredIds = new Set(desired.map((d) => d.id));
     for (const prevId of kaiBoxIdsRef.current) {
@@ -542,10 +615,70 @@ export function KaiChartPro({
     }
     const prev = new Set(kaiBoxIdsRef.current);
     for (const d of desired) {
+      // Nuevas → crear; existentes → override (refresca P&L/USD y el borde derecho
+      // de la caja abierta en vivo, sin borrar-y-recrear). Son lock:true read-only.
       if (!prev.has(d.id)) chart.createOverlay({ ...d.overlay, id: d.id });
+      else chart.overrideOverlay({ ...d.overlay, id: d.id });
     }
     kaiBoxIdsRef.current = Array.from(desiredIds);
-  }, [positions, historyTrades, symbol, currentSymbolInfo?.ticker, canCreate, showPositions, showTpSl]);
+  }, [positions, historyTrades, symbol, currentSymbolInfo?.ticker, canCreate, showPositions, showTpSl, tickSize, tickValue]);
+
+  // Preview de orden EDITABLE (estilo Exness): 3 overlays de 1 punto — línea de
+  // entrada estática + líneas de TP/SL ARRASTRABLES. Al arrastrar una línea de
+  // nivel, el template llama al handler global (registrado arriba) que sincroniza
+  // el formulario y pinta la sombra. Este effect solo crea/actualiza/quita los
+  // overlays según el form; NO toca nada mientras el usuario arrastra.
+  const opActive = !!orderPreview;
+  const opEntry = orderPreview?.entry ?? 0;
+  const opTp = orderPreview?.tp ?? 0;
+  const opSl = orderPreview?.sl ?? 0;
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chart = chartRef.current?.getChart?.() as any;
+    if (!chart) return;
+    const dropAll = () => {
+      for (const ref of [orderEntryIdRef, orderTpIdRef, orderSlIdRef]) {
+        if (ref.current) { chart.removeOverlay({ id: ref.current }); ref.current = null; }
+      }
+    };
+    // Sin preview activo → quitar todo.
+    if (!opActive || !(opEntry > 0)) { dropAll(); return; }
+    // El usuario está arrastrando ahora: no recrear/override bajo su dedo.
+    if (orderDraggingRef.current) return;
+
+    // Un timestamp cualquiera para posicionar el punto (la línea es de ancho
+    // completo, así que el x da igual; solo el precio/Y importa).
+    const data: Array<{ timestamp: number }> = chart.getDataList?.() ?? [];
+    if (!data.length) return;
+    const anchor = data[Math.max(0, data.length - 8)]?.timestamp ?? data[data.length - 1].timestamp;
+
+    // Sincroniza un overlay de 1 punto: crea si falta, override si existe, quita si
+    // el nivel se apagó.
+    const sync = (
+      ref: React.MutableRefObject<string | null>,
+      on: boolean,
+      value: number,
+      name: string,
+      extendData: Record<string, unknown> | undefined,
+      lock: boolean,
+    ) => {
+      if (!on) {
+        if (ref.current) { chart.removeOverlay({ id: ref.current }); ref.current = null; }
+        return;
+      }
+      const points = [{ timestamp: anchor, value }];
+      if (!ref.current) {
+        const id = chart.createOverlay({ name, points, lock, extendData });
+        ref.current = typeof id === 'string' ? id : Array.isArray(id) ? id[0] : null;
+      } else {
+        chart.overrideOverlay({ id: ref.current, points, extendData });
+      }
+    };
+
+    sync(orderEntryIdRef, true, opEntry, ORDER_ENTRY_LINE_NAME, undefined, true);
+    sync(orderTpIdRef, opTp > 0, opTp, ORDER_LEVEL_LINE_NAME, { kind: 'tp', entryValue: opEntry }, false);
+    sync(orderSlIdRef, opSl > 0, opSl, ORDER_LEVEL_LINE_NAME, { kind: 'sl', entryValue: opEntry }, false);
+  }, [opActive, opEntry, opTp, opSl]);
 
   // Activa una herramienta de dibujo en el chart (usado por la barra flotante de
   // favoritos y análogo a los atajos Alt+tecla).
@@ -572,12 +705,33 @@ export function KaiChartPro({
     chart?.removeOverlay({ groupId: DRAWINGS_GROUP });
   }, []);
 
+  // "Volver a hoy": vuelve al presente tras explorar días atrás (klinecharts
+  // scrollToRealTime). Botón flotante estilo TradingView.
+  const goToRealtime = useCallback(() => {
+    chartRef.current?.getChart?.()?.scrollToRealTime?.(360);
+  }, []);
+
   return (
     <div className={cn('relative min-h-0 flex-1', className)}>
       <div ref={containerRef} className="absolute inset-0" />
+      {canCreate && loadingHistory && (
+        <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-background">
+          <p className="text-[11px] text-muted-foreground">Cargando velas</p>
+        </div>
+      )}
       <FloatingToolbar onSelectTool={activateTool} />
       <MobileDrawTools onSelectTool={activateTool} onClearDrawings={clearDrawings} />
       <TimeframeInputModal input={tfInput} />
+      <button
+        type="button"
+        onClick={goToRealtime}
+        title="Volver al presente"
+        aria-label="Volver al presente"
+        className="absolute bottom-8 right-[68px] z-10 flex items-center gap-1 rounded-md border border-border/60 bg-background/85 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground"
+      >
+        <ChevronsRight className="h-3.5 w-3.5" />
+        Hoy
+      </button>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { useSearchParams } from "react-router-dom";
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { Bell, Wifi, WifiOff, Search, Plus, ChevronDown, ChevronUp, Loader2, X, Menu, Settings } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, useCallback, Fragment } from "react";
+import { Bell, Wifi, WifiOff, Search, Plus, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Eye, EyeOff, Loader2, X, Menu, Settings } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -27,6 +27,7 @@ import { useReversePosition } from "@/hooks/useReversePosition";
 import { useUpdateTradingPositionStops } from "@/hooks/useUpdateTradingPositionStops";
 import { KaiChart } from "@/components/KaiChart";
 import { KaiChartPro } from "@/components/KaiChartPro";
+import { setKaiPositionCloseHandler } from "@/lib/chartPro/kaiPositionBox";
 import { FavTimeframeBar } from "@/components/FavTimeframeBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
@@ -275,6 +276,46 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     const id = requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
     return () => cancelAnimationFrame(id);
   }, [bottomOpen]);
+
+  // Watchlist (izquierda) y panel ORDER (derecha) colapsables — persistidos en
+  // localStorage con el mismo patrón que kai:bottomOpen. Defaults SOLO cuando
+  // no hay valor guardado: watchlist OCULTA, panel ORDER ABIERTO.
+  const [watchlistOpen, setWatchlistOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    const saved = localStorage.getItem("kai:watchlistOpen");
+    if (saved === "1") return true;
+    if (saved === "0") return false;
+    return false;
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("kai:watchlistOpen", watchlistOpen ? "1" : "0");
+    }
+  }, [watchlistOpen]);
+  const [orderPanelOpen, setOrderPanelOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    const saved = localStorage.getItem("kai:orderPanelOpen");
+    if (saved === "1") return true;
+    if (saved === "0") return false;
+    return true;
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("kai:orderPanelOpen", orderPanelOpen ? "1" : "0");
+    }
+  }, [orderPanelOpen]);
+  // Igual que bottomOpen: al colapsar/expandir los paneles laterales el chart
+  // cambia de ancho y klinecharts solo se reajusta con window.resize. Los
+  // asides animan su width (transition 200ms), así que además del frame
+  // siguiente se re-dispara al terminar la transición para el ancho final.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => window.dispatchEvent(new Event("resize")));
+    const tid = window.setTimeout(() => window.dispatchEvent(new Event("resize")), 250);
+    return () => {
+      cancelAnimationFrame(id);
+      window.clearTimeout(tid);
+    };
+  }, [watchlistOpen, orderPanelOpen]);
 
   const [closeAllOpen, setCloseAllOpen] = useState<boolean>(false);
   const [closingBatch, setClosingBatch] = useState<boolean>(false);
@@ -604,6 +645,29 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const risk = slNum > 0 ? Math.abs(lastPrice - slNum) * (parseFloat(volume) || 0) : 0;
   const reward = tpNum > 0 ? Math.abs(tpNum - lastPrice) * (parseFloat(volume) || 0) : 0;
 
+  // ── Preview de orden EDITABLE en el chart (drag de SL/TP → este form) ────────
+  // Redondea al tick del símbolo al soltar un handle.
+  const roundToTickStr = useCallback(
+    (p: number) => {
+      const ts =
+        tickSpec?.tickSize && tickSpec.tickSize > 0 ? tickSpec.tickSize : null;
+      const v = ts ? Math.round(p / ts) * ts : p;
+      return String(Number(v.toFixed(ts && ts < 1 ? 4 : 2)));
+    },
+    [tickSpec?.tickSize],
+  );
+  const orderPreview = useMemo(() => {
+    const tpOn = takeProfitEnabled && tpNum > 0;
+    const slOn = stopLossEnabled && slNum > 0;
+    if ((!tpOn && !slOn) || !(lastPrice > 0)) return null;
+    return {
+      side: "buy" as const, // las zonas verde(TP)/roja(SL) no dependen del lado
+      entry: lastPrice,
+      tp: tpOn ? tpNum : 0,
+      sl: slOn ? slNum : 0,
+    };
+  }, [takeProfitEnabled, stopLossEnabled, tpNum, slNum, lastPrice]);
+
   const errorMessage = (e: unknown, fallback: string) => {
     const raw = e instanceof Error && e.message ? e.message : "";
     // Surface broker market-hours rejections in plain language instead of the
@@ -629,12 +693,15 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
       if (!strategy.ordersEnabled) return;
       if (!dbAccountId || !selectedSymbol || bidPrice <= 0) return;
       const lots = parseFloat(volume) || 0;
+      // Futuros → "contrato(s)"; CFD/forex (MT5) → "lote(s)". No mezclar la
+      // terminología entre modos.
+      const unit = terminalMode === "futures" ? "contrato" : "lote";
       // One-click mode fires immediately without the confirmation dialog (Exness
       // "Formulario con un clic"). Regular/risk modes still confirm.
       if (orderMode !== "oneClick") {
         const ok = await confirm({
           title: `${side === "buy" ? "COMPRAR" : "VENDER"} ${formatSymbolDisplay(selectedSymbol)}`,
-          description: `Operación REAL a mercado: ${lots} lote(s) de ${formatSymbolDisplay(selectedSymbol)}.\n¿Confirmas la ejecución?`,
+          description: `Operación REAL a mercado: ${lots} ${unit}(s) de ${formatSymbolDisplay(selectedSymbol)}.\n¿Confirmas la ejecución?`,
           confirmText: side === "buy" ? "Comprar" : "Vender",
           destructive: side === "sell",
         });
@@ -664,13 +731,23 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
           confirmationText: REAL_CONFIRMATION_TEXT,
         });
         toast.success(
-          `${side === "buy" ? "Compra" : "Venta"} ejecutada · ${lots} lotes ${selectedSymbol}`,
+          `${side === "buy" ? "Compra" : "Venta"} ejecutada · ${lots} ${unit}s ${selectedSymbol}`,
+          {
+            // Click → abre la pestaña ÓRDENES de la cuenta activa (donde se ejecutó).
+            action: {
+              label: "Ver órdenes",
+              onClick: () => {
+                setBottomTab("ORDENES");
+                setBottomOpen(true);
+              },
+            },
+          },
         );
       } catch (e) {
         toast.error(errorMessage(e, "No se pudo ejecutar la orden"));
       }
     },
-    [confirm, dbAccountId, selectedSymbol, bidPrice, askPrice, fallbackPrice, placeOrder, volume, takeProfitEnabled, tpNum, stopLossEnabled, slNum, orderMode, strategy.ordersEnabled],
+    [confirm, dbAccountId, selectedSymbol, bidPrice, askPrice, fallbackPrice, placeOrder, volume, takeProfitEnabled, tpNum, stopLossEnabled, slNum, orderMode, strategy.ordersEnabled, terminalMode],
   );
 
   const handleClosePosition = useCallback(
@@ -772,6 +849,17 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         }),
     [positions, resolvedAccount],
   );
+
+  // Cablea la '×' de las cajas de posición del chart (kaiPositionBox) al mismo
+  // flujo de cierre REAL del terminal (confirmación + risk gate). El overlay pasa
+  // ticket = String(position.id); lo resolvemos contra las posiciones visibles.
+  useEffect(() => {
+    setKaiPositionCloseHandler((ticket) => {
+      const pos = uiPositions.find((p) => String(p.id) === ticket);
+      if (pos) void handleClosePosition(pos);
+    });
+    return () => setKaiPositionCloseHandler(null);
+  }, [uiPositions, handleClosePosition]);
 
   const totalPnl = useMemo(
     () => uiPositions.reduce((acc, p) => acc + (p.openPnlUsd ?? 0), 0),
@@ -965,9 +1053,9 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
       <div className="flex flex-1 overflow-hidden relative">
         <aside
           className={cn(
-            "shrink-0 border-r border-white/10 bg-[#0d0f16] flex flex-col overflow-hidden transition-all duration-200",
+            "shrink-0 bg-[#0d0f16] flex flex-col overflow-hidden transition-all duration-200",
             "hidden md:flex",
-            "w-64",
+            watchlistOpen ? "w-64 border-r border-white/10" : "w-0 border-r-0",
           )}
         >
           <Watchlist
@@ -1033,9 +1121,14 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                   timezone={settings.timezone}
                   showPositions={settings.showPositions}
                   showTpSl={settings.showTpSl}
+                  tickSize={tickSpec?.tickSize ?? null}
+                  tickValue={tickSpec?.tickValue ?? null}
                   onSymbolChange={openSymbol}
                   onPeriodChange={setTimeframe}
                   focusTrade={focusTrade}
+                  orderPreview={orderPreview}
+                  onOrderTpChange={(p) => setTakeProfitPrice(roundToTickStr(p))}
+                  onOrderSlChange={(p) => setStopLossPrice(roundToTickStr(p))}
                 />
               </ErrorBoundary>
             ) : (
@@ -1052,6 +1145,27 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
               />
             )}
 
+            {/* Toggles de paneles laterales (solo desktop, donde existen los
+                asides): pestañas flotantes sobre los bordes del chart, estilo
+                TradingView. El chevron apunta hacia la acción resultante. */}
+            <button
+              type="button"
+              onClick={() => setWatchlistOpen((v) => !v)}
+              title={watchlistOpen ? "Ocultar watchlist" : "Mostrar watchlist"}
+              aria-label={watchlistOpen ? "Ocultar watchlist" : "Mostrar watchlist"}
+              className="hidden md:flex absolute left-0 bottom-3 z-30 h-12 w-5 items-center justify-center rounded-r border border-l-0 border-white/10 bg-[#0d0f16]/90 text-white/50 hover:bg-[#151824] hover:text-white"
+            >
+              {watchlistOpen ? <ChevronLeft className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            </button>
+            <button
+              type="button"
+              onClick={() => setOrderPanelOpen((v) => !v)}
+              title={orderPanelOpen ? "Ocultar panel de orden" : "Mostrar panel de orden"}
+              aria-label={orderPanelOpen ? "Ocultar panel de orden" : "Mostrar panel de orden"}
+              className="hidden lg:flex absolute right-0 bottom-3 z-30 h-12 w-5 items-center justify-center rounded-l border border-r-0 border-white/10 bg-[#0d0f16]/90 text-white/50 hover:bg-[#151824] hover:text-white"
+            >
+              {orderPanelOpen ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            </button>
           </div>
           <div className={cn("border-t border-white/10 bg-[#0d0f16] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
             <div className="flex items-center justify-between border-b border-white/10 px-2 sm:px-3 py-1.5">
@@ -1114,6 +1228,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                 onFocusTrade={handleFocusTrade}
                 onFocusPosition={handleFocusPosition}
                 unitLabel={strategy.unitLabel}
+                accountName={resolvedAccount?.name ?? "—"}
               />
             )}
           </div>
@@ -1121,9 +1236,9 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
 
         <aside
           className={cn(
-            "shrink-0 border-l border-white/10 bg-[#0d0f16] flex flex-col overflow-hidden transition-all duration-200",
+            "shrink-0 bg-[#0d0f16] flex flex-col overflow-hidden transition-all duration-200",
             "hidden lg:flex",
-            "w-80",
+            orderPanelOpen ? "w-80 border-l border-white/10" : "w-0 border-l-0",
           )}
         >
           <TradePanel
@@ -1823,6 +1938,54 @@ const ORDER_KIND_LABEL: Record<TradingOrder["type"], string> = {
   other: "—",
 };
 
+// ── Columna ID de trades (ticket del broker) ─────────────────────────────────
+// OCULTA por default; el "ojito" la muestra a elección del usuario y persiste
+// en localStorage — mismo comportamiento que la columna ID de Orders en el
+// frontend principal (para el futuro sistema de reportes de trades).
+const SHOW_TRADE_IDS_KEY = "kai:terminal:show-trade-ids";
+
+function useShowTradeIds(): [boolean, () => void] {
+  const [show, setShow] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(SHOW_TRADE_IDS_KEY) === "1";
+  });
+  const toggle = useCallback(() => {
+    setShow((v) => {
+      const next = !v;
+      try {
+        localStorage.setItem(SHOW_TRADE_IDS_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }, []);
+  return [show, toggle];
+}
+
+function TradeIdsToggle({ show, onToggle }: { show: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      title={show ? "Ocultar IDs de trades" : "Mostrar IDs de trades"}
+      aria-label={show ? "Ocultar IDs de trades" : "Mostrar IDs de trades"}
+      className={cn(
+        "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border transition-colors",
+        show
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+          : "border-white/10 text-white/40 hover:text-white/70",
+      )}
+    >
+      {show ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+    </button>
+  );
+}
+
+// Prefijo "[Emulada]" en nombres de cuenta se abrevia "[Sim]" (igual que
+// formatConnectionAccount en Orders del frontend principal).
+const displayAccountName = (name: string) => name.replace(/^\[Emulada\]/, "[Sim]");
+
 // Contenido de la pestaña ÓRDENES: órdenes PENDIENTES (working orders reales del
 // broker) arriba, y las EJECUTADAS (historial de trades cerrados) abajo —
 // reemplaza a la vieja pestaña HISTORIAL (las abiertas viven en POSICIONES).
@@ -1830,17 +1993,47 @@ function OrdersTabContent({
   orders,
   historyTrades,
   onFocusTrade,
+  accountName,
+  showTradeIds,
+  onToggleTradeIds,
 }: {
   orders: TradingOrder[];
   historyTrades: TradingHistoryItem[];
   onFocusTrade?: (t: TradingHistoryItem) => void;
+  /** Nombre de la cuenta activa (el historial es siempre de UNA cuenta). */
+  accountName: string;
+  /** Columna ID (tickets) visible — controlada por el "ojito" (persistida). */
+  showTradeIds: boolean;
+  onToggleTradeIds: () => void;
 }) {
+  // Filas de EJECUTADAS expandidas para ver las salidas parciales (scale-out).
+  // Click en el nº de contratos de un trade con >1 tramo la despliega.
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const toggleRow = (id: string) =>
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  // Numéricos sin valor se muestran como 0.00 (no "—"): convención MT5 donde
+  // SL/TP = 0 significa "sin nivel".
   const num = (n: number | null | undefined, dp = 2) =>
-    n == null || !Number.isFinite(n) ? "—" : n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
-  const time = (iso: string | null) =>
+    (n == null || !Number.isFinite(n) ? 0 : n).toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: dp });
+  const time = (iso: string | null | undefined) =>
     iso ? new Date(iso).toLocaleString("es-DO", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
   const sectionHead = "sticky top-0 z-10 bg-[#0b1420] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.1em] text-white/45";
   const th = "px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide text-white/40";
+
+  // Cierre MANUAL (badge "M" igual que la vista Orders del frontend principal):
+  // KAI_META closeSource manual_kai/manual_mt5, o DEAL_REASON CLIENT/MOBILE/WEB.
+  const manualCloseTooltip = (t: TradingHistoryItem): string | null => {
+    if (t.closeSource === "manual_kai") return "Cierre manual desde Kai";
+    if (t.closeSource === "manual_mt5") return "Cierre manual desde MT5";
+    const reason = String(t.closeReason || "").trim().toUpperCase().replace(/^DEAL_REASON_/, "");
+    if (["CLIENT", "MOBILE", "WEB"].includes(reason)) return "Cierre manual desde MT5";
+    return null;
+  };
 
   return (
     <div className="flex-1 overflow-auto" style={{ scrollbarWidth: "thin" }}>
@@ -1881,41 +2074,142 @@ function OrdersTabContent({
         </>
       )}
 
-      <div className={cn(sectionHead, orders.length > 0 && "border-t border-white/10")}>Ejecutadas</div>
+      <div className={cn(sectionHead, "flex items-center justify-between", orders.length > 0 && "border-t border-white/10")}>
+        <span>Ejecutadas</span>
+        <TradeIdsToggle show={showTradeIds} onToggle={onToggleTradeIds} />
+      </div>
       {historyTrades.length === 0 ? (
         <div className="px-3 py-4 text-center text-xs text-white/40">Sin ejecutadas recientes</div>
       ) : (
-        <table className="w-full text-[11px]">
-          <thead>
-            <tr className="text-left">
-              <th className={th + " text-left"}>Símbolo</th>
-              <th className={th + " text-left"}>Lado</th>
-              <th className={th + " text-right"}>Contratos</th>
-              <th className={th + " text-right"}>Entrada</th>
-              <th className={th + " text-right"}>PnL</th>
-              <th className={th + " text-right"}>Cierre</th>
-            </tr>
-          </thead>
-          <tbody>
-            {historyTrades.map((t) => (
-              <tr
-                key={t.id}
-                onDoubleClick={() => onFocusTrade?.(t)}
-                title="Doble clic para ver este trade en el chart"
-                className="border-t border-white/5 text-white/80 cursor-pointer hover:bg-white/5"
-              >
-                <td className="px-3 py-1.5 font-medium text-white">{formatSymbolDisplay(t.symbol)}</td>
-                <td className={`px-3 py-1.5 ${t.side === "buy" ? "text-[#4ac767]" : "text-[#f0705c]"}`}>{t.side === "buy" ? "BUY" : "SELL"}</td>
-                <td className="px-3 py-1.5 text-right font-mono">{num(t.volume)}</td>
-                <td className="px-3 py-1.5 text-right font-mono">{num(t.entryPrice)}</td>
-                <td className={`px-3 py-1.5 text-right font-mono ${(t.profitLoss ?? 0) >= 0 ? "text-[#4ac767]" : "text-[#f0705c]"}`}>
-                  {t.profitLoss == null ? "—" : `${t.profitLoss >= 0 ? "+" : ""}$${num(t.profitLoss)}`}
-                </td>
-                <td className="px-3 py-1.5 text-right text-white/50">{time(t.closedAt)}</td>
+        // Mismas columnas que la vista Orders del frontend principal:
+        // Cuenta | Contrato | Dirección | Contratos | Entrada | Salida | TP | SL | PnL | Tipo | Hora.
+        // La tabla es más ancha que el panel inferior → scroll horizontal propio.
+        <div className="overflow-x-auto" style={{ scrollbarWidth: "thin" }}>
+          <table className={cn("w-full text-[11px]", showTradeIds ? "min-w-[1020px]" : "min-w-[960px]")}>
+            <thead>
+              <tr className="text-left">
+                {showTradeIds && <th className={th + " text-left"}>ID</th>}
+                <th className={th + " text-left"}>Cuenta</th>
+                <th className={th + " text-left"}>Contrato</th>
+                <th className={th + " text-left"}>Dirección</th>
+                <th className={th + " text-right"}>Contratos</th>
+                <th className={th + " text-right"}>Entrada</th>
+                <th className={th + " text-right"}>Salida</th>
+                <th className={th + " text-right"}>TP</th>
+                <th className={th + " text-right"}>SL</th>
+                <th className={th + " text-right"}>PnL</th>
+                <th className={th + " text-left"}>Tipo</th>
+                <th className={th + " text-right"}>Hora</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {historyTrades.map((t) => {
+                const manualTooltip = manualCloseTooltip(t);
+                const hasPartials = !!(t.partials && t.partials.length > 1);
+                const expanded = expandedRows.has(t.id);
+                const colCount = showTradeIds ? 12 : 11;
+                return (
+                  <Fragment key={t.id}>
+                  <tr
+                    onDoubleClick={() => onFocusTrade?.(t)}
+                    title="Doble clic para ver este trade en el chart"
+                    className="border-t border-white/5 text-white/80 cursor-pointer hover:bg-white/5"
+                  >
+                    {/* Ticket del broker (referencia para reportes de trades);
+                        fallback id corto si el API aún no manda ticket. */}
+                    {showTradeIds && (
+                      <td className="px-3 py-1.5 font-mono text-[10px] text-white/50 whitespace-nowrap" title={t.id}>
+                        #{t.ticket ?? t.id.slice(0, 8)}
+                      </td>
+                    )}
+                    <td className="px-3 py-1.5 text-white/70 whitespace-nowrap">{displayAccountName(accountName)}</td>
+                    <td className="px-3 py-1.5 font-medium text-white">{formatSymbolDisplay(t.symbol)}</td>
+                    <td className={`px-3 py-1.5 ${t.side === "buy" ? "text-[#4ac767]" : "text-[#f0705c]"}`}>{t.side === "buy" ? "BUY" : "SELL"}</td>
+                    <td className="px-3 py-1.5 text-right font-mono">
+                      {hasPartials ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleRow(t.id);
+                          }}
+                          title={`${t.partials!.length} salidas parciales — clic para ${expanded ? "ocultar" : "ver"}`}
+                          className="inline-flex items-center gap-1 rounded px-1 text-white hover:bg-white/10"
+                        >
+                          {num(t.volume)}
+                          <span className="text-[9px] text-white/50">{expanded ? "▴" : "▾"}</span>
+                        </button>
+                      ) : (
+                        num(t.volume)
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono">{num(t.entryPrice)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono whitespace-nowrap">
+                      {num(t.exitPrice)}
+                      {manualTooltip && (
+                        <span
+                          title={manualTooltip}
+                          className="ml-1 inline-flex items-center rounded bg-white/10 px-1 text-[9px] font-bold leading-4 text-white/60 align-middle"
+                        >
+                          M
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-mono text-[#4ac767]">{num(t.takeProfit)}</td>
+                    <td className="px-3 py-1.5 text-right font-mono text-[#f0705c]">{num(t.stopLoss)}</td>
+                    <td className={`px-3 py-1.5 text-right font-mono ${(t.profitLoss ?? 0) >= 0 ? "text-[#4ac767]" : "text-[#f0705c]"}`}>
+                      {`${(t.profitLoss ?? 0) >= 0 ? "+" : ""}$${num(t.profitLoss)}`}
+                    </td>
+                    {/* synced_trades no guarda el tipo de orden; la vista Orders del
+                        frontend principal también lo fija a "Mercado". */}
+                    <td className="px-3 py-1.5 text-white/60">Mercado</td>
+                    <td className="px-3 py-1.5 text-right text-white/50 whitespace-nowrap">
+                      <div className="flex flex-col items-end leading-tight">
+                        <span>
+                          <span className="mr-1 text-[9px] font-bold uppercase text-white/30">Ent</span>
+                          {time(t.openedAt)}
+                        </span>
+                        <span>
+                          <span className="mr-1 text-[9px] font-bold uppercase text-white/30">Sal</span>
+                          {time(t.closedAt)}
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                  {hasPartials && expanded && (
+                    <tr className="bg-black/20">
+                      <td colSpan={colCount} className="px-3 py-2">
+                        <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-white/40">
+                          Salidas parciales · {t.partials!.length} tramos
+                        </div>
+                        <div className="flex flex-col gap-0.5">
+                          {t.partials!.map((p, i) => (
+                            <div
+                              key={i}
+                              className="flex items-center gap-4 font-mono text-[11px] text-white/70"
+                            >
+                              <span className="w-12 text-white/40">{num(p.qty)} ct</span>
+                              <span>@ {num(p.price)}</span>
+                              <span
+                                className={
+                                  (p.pnl ?? 0) >= 0 ? "text-[#4ac767]" : "text-[#f0705c]"
+                                }
+                              >
+                                {`${(p.pnl ?? 0) >= 0 ? "+" : ""}$${num(p.pnl)}`}
+                              </span>
+                              <span className="text-white/40">{time(p.at)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -1937,6 +2231,7 @@ function BottomPanel({
   onFocusTrade,
   onFocusPosition,
   unitLabel,
+  accountName,
 }: {
   positions: CopyTradingPosition[];
   loading: boolean;
@@ -1953,10 +2248,15 @@ function BottomPanel({
   onFocusTrade?: (t: TradingHistoryItem) => void;
   onFocusPosition?: (p: CopyTradingPosition) => void;
   unitLabel: string;
+  /** Nombre de la cuenta activa — columna "Cuenta" de EJECUTADAS. */
+  accountName: string;
 }) {
   // Futuros → "Contratos" (enteros); CFD → "Lotes" (2 decimales). El label y el
   // formato de la columna de cantidad siguen el modo del terminal.
   const isContracts = unitLabel === "Contratos";
+  // Columna ID (tickets) oculta por default; el "ojito" la muestra y persiste.
+  // Compartida entre POSICIONES y EJECUTADAS (mismo estado/misma key).
+  const [showTradeIds, toggleTradeIds] = useShowTradeIds();
   const [edit, setEdit] = useState<CopyTradingPosition | null>(null);
   const [editSl, setEditSl] = useState("");
   const [editTp, setEditTp] = useState("");
@@ -1966,8 +2266,27 @@ function BottomPanel({
 
   const openEdit = (p: CopyTradingPosition) => {
     setEdit(p);
-    setEditSl(p.sl && p.sl > 0 ? String(p.sl) : "");
-    setEditTp(p.tp && p.tp > 0 ? String(p.tp) : "");
+    // Pre-llenado por DEFECTO con RR 1:3 cuando la posición no trae SL/TP (antes
+    // salía "0 = sin TP/SL", confuso). Riesgo ≈ 0.2% del precio de entrada, reward
+    // 3× (1:3). El usuario ajusta antes de confirmar. Si ya hay SL/TP, se respetan.
+    const entry = p.avgPrice || p.currentPrice || 0;
+    const isLong = p.side === "LONG";
+    const risk = entry * 0.002;
+    const round = (v: number) => Number(v.toFixed(entry > 0 && entry < 20 ? 5 : 2));
+    const defSl =
+      p.sl && p.sl > 0
+        ? p.sl
+        : entry > 0
+          ? round(isLong ? entry - risk : entry + risk)
+          : 0;
+    const defTp =
+      p.tp && p.tp > 0
+        ? p.tp
+        : entry > 0
+          ? round(isLong ? entry + 3 * risk : entry - 3 * risk)
+          : 0;
+    setEditSl(defSl > 0 ? String(defSl) : "");
+    setEditTp(defTp > 0 ? String(defTp) : "");
   };
   const saveEdit = async () => {
     if (!edit) return;
@@ -1980,7 +2299,10 @@ function BottomPanel({
     }
   };
 
-  const COLS = "grid-cols-[80px_104px_52px_64px_1fr_1fr_84px_84px_120px_1fr_30px]";
+  // Variante sin la columna ID (oculta por default, toggle "ojito").
+  const COLS = showTradeIds
+    ? "grid-cols-[80px_104px_52px_64px_1fr_1fr_84px_84px_120px_1fr_30px]"
+    : "grid-cols-[104px_52px_64px_1fr_1fr_84px_84px_120px_1fr_30px]";
   const fmtOpened = (iso: string | null) =>
     iso ? new Date(iso).toLocaleString("es", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 
@@ -2051,7 +2373,7 @@ function BottomPanel({
           {!loading && positions.length > 0 && (
             <>
               <div className={cn("hidden sm:grid gap-2 px-3 py-1.5 text-[10px] uppercase tracking-wider text-white/40 border-b border-white/5", COLS)}>
-                <div>Ticket</div>
+                {showTradeIds && <div>ID</div>}
                 <div>Símbolo</div>
                 <div>Tipo</div>
                 <div className="text-right">{unitLabel}</div>
@@ -2061,7 +2383,10 @@ function BottomPanel({
                 <div className="text-right">SL</div>
                 <div className="text-right">Hora apertura</div>
                 <div className="text-right">P&L</div>
-                <div></div>
+                {/* Esquina de acciones: toggle "ojito" de la columna ID. */}
+                <div className="flex justify-end">
+                  <TradeIdsToggle show={showTradeIds} onToggle={toggleTradeIds} />
+                </div>
               </div>
               {positions.map((p) => (
                 <div
@@ -2091,7 +2416,10 @@ function BottomPanel({
                   </div>
                   {/* Desktop */}
                   <div className={cn("hidden sm:grid gap-2 items-center", COLS)}>
-                    <div className="text-white/80">#{p.id}</div>
+                    {/* Ticket del broker — mismo look que la columna ID de EJECUTADAS. */}
+                    {showTradeIds && (
+                      <div className="font-mono text-[10px] text-white/50 truncate" title={p.id}>#{p.id}</div>
+                    )}
                     <div className="font-semibold text-white truncate">{formatSymbolDisplay(p.symbol)}</div>
                     <div>
                       <Badge className={cn("px-2 py-0.5 text-[10px] font-bold border-0", p.side === "LONG" ? "bg-[#2ed68d]/15 text-[#2ed68d]" : "bg-[#ef5350]/15 text-[#ef5350]")}>
@@ -2165,11 +2493,11 @@ function BottomPanel({
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[#2ed68d] mb-1">Take Profit</div>
-                <Input value={editTp} onChange={(e) => setEditTp(e.target.value)} placeholder="0 = sin TP" className="h-9 bg-[#151824] border-white/10 text-white tabular-nums" />
+                <Input value={editTp} onChange={(e) => setEditTp(e.target.value)} placeholder="Take profit" className="h-9 bg-[#151824] border-white/10 text-white tabular-nums" />
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[#ef5350] mb-1">Stop Loss</div>
-                <Input value={editSl} onChange={(e) => setEditSl(e.target.value)} placeholder="0 = sin SL" className="h-9 bg-[#151824] border-white/10 text-white tabular-nums" />
+                <Input value={editSl} onChange={(e) => setEditSl(e.target.value)} placeholder="Stop loss" className="h-9 bg-[#151824] border-white/10 text-white tabular-nums" />
               </div>
               <div className="flex gap-2 pt-1">
                 <Button variant="outline" className="flex-1 border-white/10 bg-transparent" onClick={() => setEdit(null)}>Cancelar</Button>
@@ -2187,6 +2515,9 @@ function BottomPanel({
           orders={orders}
           historyTrades={historyTrades}
           onFocusTrade={onFocusTrade}
+          accountName={accountName}
+          showTradeIds={showTradeIds}
+          onToggleTradeIds={toggleTradeIds}
         />
       )}
     </>

@@ -65,6 +65,9 @@ export interface TradingPosition {
 
 export interface TradingHistoryItem {
   id: string;
+  /** Ticket del broker (BigInt serializado como string); opcional para
+   * tolerar respuestas del API sin el campo. */
+  ticket?: string | null;
   tradingAccountId: string;
   provider: BrokerProviderKey;
   symbol: string;
@@ -78,6 +81,23 @@ export interface TradingHistoryItem {
   profitLoss: number | null;
   openedAt: string | null;
   closedAt: string | null;
+  /** Origen del cierre (KAI_META closeSource: 'manual_kai'/'manual_mt5'/...);
+   * opcional para tolerar respuestas del API sin el campo. */
+  closeSource?: string | null;
+  /** Razón del cierre (KAI_META reason, p.ej. DEAL_REASON_CLIENT). */
+  closeReason?: string | null;
+  /** Salidas parciales (scale-out / multi-TP) desde KAI_META; null/ausente si
+   * cerró de una. Solo viene poblado con MÁS de un tramo. La tabla Ejecutadas las
+   * despliega al hacer click en el nº de contratos. */
+  partials?: PartialExit[] | null;
+}
+
+/** Una salida PARCIAL de un trade que cerró en tramos (scale-out / multi-TP). */
+export interface PartialExit {
+  price: number;
+  qty: number;
+  pnl: number;
+  at: string;
 }
 
 /** Clase de una orden pendiente (a qué precio dispara). */
