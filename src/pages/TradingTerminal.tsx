@@ -178,6 +178,11 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   // defensively like the other resolvedAccount fields above; `null` when the
   // account has no cap configured.
   const maxContracts = (resolvedAccount as { maxContracts?: number | null } | null)?.maxContracts ?? null;
+  // Cuenta QUEMADA (challenge de fondeo 'failed'): la cuenta queda visible en
+  // modo solo-lectura (chart + historial + balance congelado); el panel de
+  // órdenes muestra el aviso y las acciones ya vienen deshabilitadas por
+  // capabilities desde execution-api.
+  const accountBlown = (resolvedAccount as { blown?: boolean } | null)?.blown === true;
 
   const [selectedSymbol, setSelectedSymbol] = useState<string>("");
   // Doble clic en un trade de ÓRDENES → llevar el chart a ese trade (entrada y
@@ -1275,6 +1280,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
           )}
         >
           <TradePanel
+            blown={accountBlown}
             bidPrice={bidPrice}
             askPrice={askPrice}
             spread={spread}
@@ -1321,6 +1327,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
               </Button>
             </div>
             <TradePanel
+              blown={accountBlown}
               bidPrice={bidPrice}
               askPrice={askPrice}
               spread={spread}
@@ -1519,9 +1526,13 @@ function TopHeader({
                       <div className="text-xs text-white/70 truncate">{a.name}</div>
                       <div className="text-[10px] text-white/40">#{a.providerAccountId ?? a.id}</div>
                     </div>
-                    {a.status === "connected" && (
+                    {a.blown ? (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded border bg-red-500/10 border-red-500/20 text-red-400 shrink-0 ml-2">
+                        Quemada
+                      </span>
+                    ) : a.status === "connected" ? (
                       <span className="h-2 w-2 rounded-full bg-emerald-400 shrink-0 ml-2" />
-                    )}
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -2362,13 +2373,14 @@ function BottomPanel({
               </div>
               {accounts.map((a) => {
                 const connected = a.status === "connected";
+                const statusLabel = a.blown ? "Quemada" : connected ? "Active" : a.status ?? "—";
                 return (
                   <div key={a.id} className="px-3 py-2 text-xs hover:bg-white/5 border-b border-white/5">
                     <div className={cn("hidden sm:grid gap-2 items-center", ACCT_COLS)}>
                       <div className="font-semibold text-white truncate">{a.name}</div>
                       <div className="flex items-center gap-1.5">
-                        <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", connected ? "bg-[#2ed68d]" : "bg-white/30")} />
-                        <span className="text-white/70">{connected ? "Active" : a.status ?? "—"}</span>
+                        <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", a.blown ? "bg-red-400" : connected ? "bg-[#2ed68d]" : "bg-white/30")} />
+                        <span className={a.blown ? "text-red-400" : "text-white/70"}>{statusLabel}</span>
                       </div>
                       <div className="text-white/70 truncate">{a.accountType ?? "—"}</div>
                       <div className="text-right text-white/80 tabular-nums">{fmtAcctUsd(a.balance)}</div>
@@ -2378,7 +2390,7 @@ function BottomPanel({
                     <div className="sm:hidden flex items-center justify-between">
                       <div className="min-w-0">
                         <div className="font-semibold text-white truncate">{a.name}</div>
-                        <div className="text-[10px] text-white/50">{a.accountType ?? "—"} · {connected ? "Active" : a.status ?? "—"}</div>
+                        <div className="text-[10px] text-white/50">{a.accountType ?? "—"} · <span className={a.blown ? "text-red-400" : undefined}>{statusLabel}</span></div>
                       </div>
                       <div className="text-right tabular-nums text-white/80">{fmtAcctUsd(a.equity ?? a.balance)}</div>
                     </div>
@@ -2558,6 +2570,7 @@ function BottomPanel({
 }
 
 function TradePanel({
+  blown,
   bidPrice,
   askPrice,
   spread,
@@ -2593,6 +2606,7 @@ function TradePanel({
   onFlattenAll,
   onCancelAll,
 }: {
+  blown?: boolean;
   bidPrice: number;
   askPrice: number;
   spread: number;
@@ -2705,6 +2719,14 @@ function TradePanel({
           <span className="text-[11px] font-semibold uppercase tracking-wider text-white/70">Order</span>
           <span className="text-[10px] text-white/40 uppercase tracking-wide">Futuros · Contratos</span>
         </div>
+        {blown && (
+          <div className="mx-3 mt-3 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 shrink-0">
+            <div className="text-[11px] font-semibold text-red-400">Cuenta quemada — solo lectura</div>
+            <div className="text-[10px] text-white/50 mt-0.5">
+              La prop firm retiró esta cuenta. Puedes revisar el chart y el historial; el balance queda congelado en su valor final.
+            </div>
+          </div>
+        )}
         <div className="px-3 pt-3 pb-2 space-y-3 overflow-y-auto flex-1">
           {/* CONTRACTS — etiqueta fija del símbolo activo (se cambia desde las tabs/watchlist). */}
           <div>
@@ -2929,6 +2951,14 @@ function TradePanel({
           <option value="risk">Cálculo de riesgo</option>
         </select>
       </div>
+      {blown && (
+        <div className="mx-3 mt-3 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 shrink-0">
+          <div className="text-[11px] font-semibold text-red-400">Cuenta quemada — solo lectura</div>
+          <div className="text-[10px] text-white/50 mt-0.5">
+            La prop firm retiró esta cuenta. Puedes revisar el chart y el historial; el balance queda congelado en su valor final.
+          </div>
+        </div>
+      )}
       <div className="grid grid-cols-[1fr_60px_1fr] gap-2 px-3 pb-3 pt-1 shrink-0">
         <div className="flex flex-col items-center gap-1 rounded-lg border border-[#ef5350]/25 bg-[#ef5350]/10 px-2 py-2.5">
           <span className="text-[10px] font-semibold tracking-wide text-[#ef6863]">VENDER</span>

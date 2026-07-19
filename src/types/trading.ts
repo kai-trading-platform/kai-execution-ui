@@ -43,6 +43,12 @@ export interface ConnectedTradingAccount {
   sodBalance?: number | null;
   /** PnL realizado del día de trading actual. */
   netDailyPnl?: number | null;
+  /**
+   * Cuenta QUEMADA: su challenge de fondeo más reciente está 'failed' (la
+   * prop firm retiró la cuenta). Solo lectura: chart e historial visibles,
+   * balance congelado, órdenes deshabilitadas (capabilities ya vienen false).
+   */
+  blown?: boolean;
   capabilities: BrokerCapabilities;
 }
 
