@@ -2220,11 +2220,21 @@ function OrdersTabContent({
                       </div>
                     </td>
                   </tr>
-                  {hasPartials && expanded && (
+                  {hasPartials && expanded && (() => {
+                    // Si TODOS los tramos comparten la hora del cierre del trade,
+                    // no son parciales "de estrategia" sino UNA orden llenada en
+                    // varios tramos por liquidez → cabecera distinta y sin repetir
+                    // la hora en cada línea.
+                    const allAtClose = t.partials!.every(
+                      (p) => time(p.at) === time(t.closedAt),
+                    );
+                    return (
                     <tr className="bg-black/20">
                       <td colSpan={colCount} className="px-3 py-2">
                         <div className="mb-1 text-[10px] font-bold uppercase tracking-wide text-white/40">
-                          Salidas parciales · {t.partials!.length} tramos
+                          {allAtClose
+                            ? `Orden llenada en ${t.partials!.length} tramos (liquidez)`
+                            : `Salidas parciales · ${t.partials!.length} tramos`}
                         </div>
                         <div className="flex flex-col gap-0.5">
                           {t.partials!.map((p, i) => (
@@ -2232,7 +2242,7 @@ function OrdersTabContent({
                               key={i}
                               className="flex items-center gap-4 font-mono text-[11px] text-white/70"
                             >
-                              <span className="w-12 text-white/40">{num(p.qty)} ct</span>
+                              <span className="w-24 text-white/40">{num(p.qty)} contratos</span>
                               <span>@ {num(p.price)}</span>
                               <span
                                 className={
@@ -2241,13 +2251,16 @@ function OrdersTabContent({
                               >
                                 {`${(p.pnl ?? 0) >= 0 ? "+" : ""}$${num(p.pnl)}`}
                               </span>
-                              <span className="text-white/40">{time(p.at)}</span>
+                              {!allAtClose && (
+                                <span className="text-white/40">{time(p.at)}</span>
+                              )}
                             </div>
                           ))}
                         </div>
                       </td>
                     </tr>
-                  )}
+                    );
+                  })()}
                   </Fragment>
                 );
               })}
