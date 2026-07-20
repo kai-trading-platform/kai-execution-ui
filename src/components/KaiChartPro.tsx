@@ -793,8 +793,21 @@ export function KaiChartPro({
     chartRef.current?.getChart?.()?.scrollToRealTime?.(360);
   }, []);
 
+  // El botón "Hoy" solo aparece con el mouse CERCA de su esquina (menos ruido
+  // visual). Se rastrea proximidad en el wrapper — un hot-zone superpuesto
+  // bloquearía el pan/crosshair de klinecharts.
+  const [nearHoy, setNearHoy] = useState(false);
+  const handleHoyProximity = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setNearHoy(rect.right - e.clientX < 190 && rect.bottom - e.clientY < 100);
+  }, []);
+
   return (
-    <div className={cn('relative min-h-0 flex-1', className)}>
+    <div
+      className={cn('relative min-h-0 flex-1', className)}
+      onMouseMove={handleHoyProximity}
+      onMouseLeave={() => setNearHoy(false)}
+    >
       <div ref={containerRef} className="absolute inset-0" />
       {canCreate && loadingHistory && (
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-background">
@@ -809,7 +822,10 @@ export function KaiChartPro({
         onClick={goToRealtime}
         title="Volver al presente"
         aria-label="Volver al presente"
-        className="absolute bottom-8 right-[68px] z-10 flex items-center gap-1 rounded-md border border-border/60 bg-background/85 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground"
+        className={cn(
+          'absolute bottom-8 right-[68px] z-10 flex items-center gap-1 rounded-md border border-border/60 bg-background/85 px-2 py-1 text-[11px] font-medium text-muted-foreground shadow-sm backdrop-blur transition-opacity duration-150 hover:text-foreground',
+          nearHoy ? 'opacity-100' : 'pointer-events-none opacity-0',
+        )}
       >
         <ChevronsRight className="h-3.5 w-3.5" />
         Hoy

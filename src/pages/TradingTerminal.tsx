@@ -255,7 +255,21 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const [stopLossEnabled, setStopLossEnabled] = useState<boolean>(false);
   const [takeProfitPrice, setTakeProfitPrice] = useState<string>("");
   const [stopLossPrice, setStopLossPrice] = useState<string>("");
-  const [bottomTab, setBottomTab] = useState<BottomTab>("POSICIONES");
+  // Pestaña inferior activa (CUENTAS/POSICIONES/ORDENES) — persistida en
+  // localStorage con el mismo patrón que kai:bottomOpen, para que un refresh
+  // te deje donde estabas.
+  const [bottomTab, setBottomTab] = useState<BottomTab>(() => {
+    if (typeof window === "undefined") return "POSICIONES";
+    const saved = localStorage.getItem("kai:bottomTab");
+    return saved === "CUENTAS" || saved === "POSICIONES" || saved === "ORDENES"
+      ? (saved as BottomTab)
+      : "POSICIONES";
+  });
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("kai:bottomTab", bottomTab);
+    }
+  }, [bottomTab]);
   // En móvil el panel inferior arranca CERRADO para que el chart use todo el
   // alto (si no, aplasta el chart a una franja). El tab "Posiciones" lo abre.
   const [bottomOpen, setBottomOpen] = useState<boolean>(() => {
