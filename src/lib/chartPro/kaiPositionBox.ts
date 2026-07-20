@@ -194,21 +194,28 @@ export function registerKaiPositionBoxOverlay(): void {
         ],
       });
 
-      // Línea de nivel: cruza desde el recuadro hasta el eje. SL/TP punteadas,
-      // entrada sólida (dónde estás vs a dónde vas — look TradingView).
+      // Línea de nivel: SL/TP punteadas, entrada punteada fina (look TradingView).
+      // `startX` permite extenderlas a lo ancho del chart en posiciones abiertas.
       const levelLine = (
         y: number,
         color: string,
         dashed: boolean,
         rightX: number = axisX,
+        startX: number = leftX,
+        dashedValue: number[] = [4, 3],
       ): OverlayFigure => ({
         type: 'line',
         ignoreEvent: true,
-        attrs: { coordinates: [{ x: leftX, y }, { x: rightX, y }] },
+        attrs: { coordinates: [{ x: startX, y }, { x: rightX, y }] },
         styles: dashed
-          ? { color, style: 'dashed', size: 1, dashedValue: [4, 3] }
+          ? { color, style: 'dashed', size: 1, dashedValue }
           : { color, style: 'solid', size: 1 },
       });
+
+      // Ancho total de una fila de split-labels (mismo cálculo que rowFigures):
+      // las líneas de nivel TERMINAN justo antes de su etiqueta para no cruzarla.
+      const rowWidth = (segs: Seg[]): number =>
+        segs.map((s) => (s.square ? ROW_H : boxW(s.text))).reduce((a, b) => a + b, 0);
 
       const figs: OverlayFigure[] = [];
 
@@ -220,31 +227,14 @@ export function registerKaiPositionBoxOverlay(): void {
         figs.push({ type: 'polygon', ignoreEvent: true, attrs: zone(stopY), styles: { style: 'fill', color: FILL_STOP } });
       }
 
-      // 2) Líneas de nivel (Entry sólida, TP/SL punteadas). Trade ABIERTO: hasta
-      // el eje de precios. Trade CERRADO (sin labels): sólo dentro de su propio
-      // tramo (entrada→salida) para que la caja se VEA claramente sin ensuciar
-      // todo el chart con líneas horizontales de trades pasados. Antes los trades
-      // cerrados dibujaban sólo las zonas translúcidas y "no se veía" el dibujo.
-      const lineRight = showLabels ? axisX : boxRightX;
-      // Las líneas PUNTEADAS de TP/SL (bordes arriba/abajo de la caja) solo se
-      // dibujan en posiciones ABIERTAS, donde conectan la caja con los tags del
-      // eje. En trades CERRADOS / cajas de análisis (!showLabels) las zonas ya
-      // delimitan la caja, así que las punteadas sobran (feedback usuario).
-      if (showLabels && showTarget)
-        figs.push(levelLine(targetY, COLOR_TARGET, true, lineRight));
-      if (showLabels && hasStop)
-        figs.push(levelLine(stopY, COLOR_STOP, true, lineRight));
-      // La línea de ENTRADA solo en posiciones ABIERTAS. En trades CERRADOS debe
-      // DESAPARECER al instante (feedback usuario 2026-07-17): antes un trade
-      // cerrado sin SL/TP degeneraba a una línea de entry suelta que quedaba
-      // colgada en el chart tras cerrar. Las zonas (si hay SL/TP) ya marcan el
-      // trade pasado sin ensuciar con la línea.
-      if (showLabels)
-        figs.push(levelLine(entryY, COLOR_ENTRY_LINE, false, lineRight));
-
+      // Trade CERRADO / caja de análisis: solo zonas (sin líneas ni labels) —
+      // comportamiento previo (feedback usuario 2026-07-17).
       if (!showLabels) return figs;
 
-      // 3) Split-labels [ info ] · [ USD ] · [ × ] flotando a la izquierda del eje.
+      // 2) Split-labels: se PRE-computan los segmentos de cada fila para saber
+      // dónde termina cada línea de nivel — antes las líneas seguían hasta el
+      // eje POR DEBAJO de los chips y se asomaban entre segmentos (feedback:
+      // "la línea pasa por encima del Buy").
       const side = ext.side === 'buy' ? 'Buy' : 'Sell';
       const qty = ext.qty;
       const infoText = qty != null ? `${qty} ${side}` : side;
@@ -254,41 +244,64 @@ export function registerKaiPositionBoxOverlay(): void {
         ...(ticket ? { closeKey: `kaiclose:${ticket}` } : {}),
       });
 
-      // TP (verde)
-      if (showTarget) {
-        const val = ext.usdAtTarget != null && Number.isFinite(ext.usdAtTarget)
-          ? fmtUsd(ext.usdAtTarget)
-          : targetVal.toFixed(pr);
-        figs.push(...rowFigures(targetY, [
-          { text: infoText, bg: INFO_BG, fg: INFO_TEXT },
-          { text: val, bg: COLOR_TARGET, fg: WHITE, weight: 500 },
-          closeSeg(COLOR_TARGET),
-        ], axisX));
-      }
+      const targetSegs: Seg[] | null = showTarget
+        ? [
+            { text: infoText, bg: INFO_BG, fg: INFO_TEXT },
+            {
+              text:
+                ext.usdAtTarget != null && Number.isFinite(ext.usdAtTarget)
+                  ? fmtUsd(ext.usdAtTarget)
+                  : targetVal.toFixed(pr),
+              bg: COLOR_TARGET,
+              fg: WHITE,
+              weight: 500,
+            },
+            closeSeg(COLOR_TARGET),
+          ]
+        : null;
+      const entrySegs: Seg[] = [
+        { text: infoText, bg: INFO_BG, fg: INFO_TEXT },
+        {
+          text:
+            ext.pnlUsd != null && Number.isFinite(ext.pnlUsd)
+              ? fmtUsd(ext.pnlUsd)
+              : entryVal.toFixed(pr),
+          bg: ENTRY_BG,
+          fg: WHITE,
+          weight: 500,
+          leftDivider: true,
+        },
+        closeSeg(ENTRY_BG),
+      ];
+      const stopSegs: Seg[] | null = hasStop
+        ? [
+            { text: infoText, bg: INFO_BG, fg: INFO_TEXT },
+            {
+              text:
+                ext.usdAtStop != null && Number.isFinite(ext.usdAtStop)
+                  ? fmtUsd(ext.usdAtStop)
+                  : stopVal.toFixed(pr),
+              bg: COLOR_STOP,
+              fg: WHITE,
+              weight: 500,
+            },
+            closeSeg(COLOR_STOP),
+          ]
+        : null;
 
-      // Entrada (tier gris) — ahora también con ×.
-      {
-        const val = ext.pnlUsd != null && Number.isFinite(ext.pnlUsd)
-          ? fmtUsd(ext.pnlUsd)
-          : entryVal.toFixed(pr);
-        figs.push(...rowFigures(entryY, [
-          { text: infoText, bg: INFO_BG, fg: INFO_TEXT },
-          { text: val, bg: ENTRY_BG, fg: WHITE, weight: 500, leftDivider: true },
-          closeSeg(ENTRY_BG),
-        ], axisX));
-      }
+      // 3) Líneas de nivel a lo ANCHO del chart (estilo TradingView), cada una
+      // terminando 3px antes de su etiqueta. Entry punteado FINO y discreto
+      // (TV-style: se ve dónde entraste sin ensuciar el chart).
+      const lineEnd = (segs: Seg[]): number => axisX - rowWidth(segs) - 3;
+      const CHART_LEFT = 0;
+      if (targetSegs) figs.push(levelLine(targetY, COLOR_TARGET, true, lineEnd(targetSegs), CHART_LEFT));
+      if (stopSegs) figs.push(levelLine(stopY, COLOR_STOP, true, lineEnd(stopSegs), CHART_LEFT));
+      figs.push(levelLine(entryY, COLOR_ENTRY_LINE, true, lineEnd(entrySegs), CHART_LEFT, [2, 3]));
 
-      // SL (rojo)
-      if (hasStop) {
-        const val = ext.usdAtStop != null && Number.isFinite(ext.usdAtStop)
-          ? fmtUsd(ext.usdAtStop)
-          : stopVal.toFixed(pr);
-        figs.push(...rowFigures(stopY, [
-          { text: infoText, bg: INFO_BG, fg: INFO_TEXT },
-          { text: val, bg: COLOR_STOP, fg: WHITE, weight: 500 },
-          closeSeg(COLOR_STOP),
-        ], axisX));
-      }
+      // 4) Las filas de labels, ancladas al eje.
+      if (targetSegs) figs.push(...rowFigures(targetY, targetSegs, axisX));
+      figs.push(...rowFigures(entryY, entrySegs, axisX));
+      if (stopSegs) figs.push(...rowFigures(stopY, stopSegs, axisX));
 
       return figs;
     },

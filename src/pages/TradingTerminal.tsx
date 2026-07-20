@@ -42,6 +42,8 @@ import { resolveOrderEntryPrice } from "@/lib/orderEntryPrice";
 import { formatSymbolDisplay, compareSymbols, symbolIcon } from "@/lib/symbolDisplay";
 import { useMarketCandles } from "@/modules/copyTrading/hooks/useMarketCandles";
 import { PineEditorPanel } from "@/components/PineEditorPanel";
+import { StrategyTelemetryBox } from "@/components/StrategyTelemetryBox";
+import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/components/ui/sonner";
 import { useConfirm } from "@/components/ConfirmDialogProvider";
 import { REAL_CONFIRMATION_TEXT } from "@/constants/tradingExecution";
@@ -271,6 +273,23 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
       localStorage.setItem("kai:bottomTab", bottomTab);
     }
   }, [bottomTab]);
+  // HUD de telemetría de estrategias — SOLO usuarios admin lo ven; persiste.
+  const { user: authUser } = useAuth();
+  const isAdmin = (authUser?.role ?? "").toLowerCase() === "admin";
+  const [strategyHudOn, setStrategyHudOn] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("kai:strategyHud") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("kai:strategyHud", strategyHudOn ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  }, [strategyHudOn]);
   // En móvil el panel inferior arranca CERRADO para que el chart use todo el
   // alto (si no, aplasta el chart a una franja). El tab "Posiciones" lo abre.
   const [bottomOpen, setBottomOpen] = useState<boolean>(() => {
@@ -1165,6 +1184,20 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
             <FavTimeframeBar timeframe={timeframe} onSelect={setTimeframe} />
           )}
           <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+            {/* HUD admin: telemetría de las estrategias vivas (qué esperan/por qué) + zonas. */}
+            {isAdmin && strategyHudOn && (
+              <StrategyTelemetryBox symbol={selectedSymbol || null} onClose={() => setStrategyHudOn(false)} />
+            )}
+            {isAdmin && !strategyHudOn && (
+              <button
+                type="button"
+                onClick={() => setStrategyHudOn(true)}
+                className="absolute top-12 left-2 z-20 rounded-md border border-white/10 bg-[#0d0f16]/80 px-2 py-1 text-[10px] text-white/50 hover:text-white/85 backdrop-blur-sm"
+                title="Telemetría de estrategias (admin)"
+              >
+                ◎ Estrategias
+              </button>
+            )}
             {USE_CHART_PRO ? (
               <ErrorBoundary
                 fallback={
