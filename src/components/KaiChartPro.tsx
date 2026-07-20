@@ -13,6 +13,8 @@ import { useAccountSymbols } from '@/hooks/useAccountSymbols';
 import { useMarketSocket } from '@/contexts/MarketSocketContext';
 import { formatSymbolDisplay } from '@/lib/symbolDisplay';
 import { KaiDatafeed } from '@/lib/chartPro/KaiDatafeed';
+import { setActiveProChart } from '@/lib/chartPro/chartInstance';
+import { reapplyStoredPineScripts } from '@/lib/pine/pineChart';
 import { CHART_PRO_PERIODS, periodForTimeframe, timeframeFromKeyInput } from '@/lib/chartPro/periods';
 import { useChartDrawings, type SavedDrawing } from '@/hooks/useChartDrawings';
 import { buildKaiTradeBoxes, KAI_TRADES_GROUP } from '@/lib/chartPro/kaiTradeBoxes';
@@ -379,9 +381,21 @@ export function KaiChartPro({
       // Leyenda de indicadores (EMA10/20/55/200) también oculta por default.
       indicator: { tooltip: { showRule: TooltipShowRule.None, text: { color: 'rgba(226,228,233,0.7)' } } },
     });
+    // Publica la instancia klinecharts para consumidores fuera del árbol (Kai
+    // Pine) y re-aplica los scripts Pine persistidos (refresco de página).
+    const inner = chartRef.current.getChart();
+    if (inner) {
+      setActiveProChart(inner);
+      try {
+        reapplyStoredPineScripts(inner);
+      } catch {
+        /* un script corrupto no debe impedir crear el chart */
+      }
+    }
     const container = containerRef.current;
     return () => {
       // 0.1.1 no expone dispose; al desmontar limpiamos el contenedor.
+      setActiveProChart(null);
       if (container) container.replaceChildren();
       chartRef.current = null;
     };

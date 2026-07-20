@@ -41,6 +41,7 @@ import { toUiPosition } from "@/lib/positionMapping";
 import { resolveOrderEntryPrice } from "@/lib/orderEntryPrice";
 import { formatSymbolDisplay, compareSymbols, symbolIcon } from "@/lib/symbolDisplay";
 import { useMarketCandles } from "@/modules/copyTrading/hooks/useMarketCandles";
+import { PineEditorPanel } from "@/components/PineEditorPanel";
 import { toast } from "@/components/ui/sonner";
 import { useConfirm } from "@/components/ConfirmDialogProvider";
 import { REAL_CONFIRMATION_TEXT } from "@/constants/tradingExecution";
@@ -74,7 +75,7 @@ const PREFERRED_DEFAULT_SYMBOL = "MNQ";
 // memos downstream — see the "Maximum update depth exceeded" fix in KaiChart).
 const EMPTY_LIST: never[] = [];
 
-type BottomTab = "CUENTAS" | "POSICIONES" | "ORDENES";
+type BottomTab = "CUENTAS" | "POSICIONES" | "ORDENES" | "PINE";
 type OrderType = "MERCADO" | "LIMITE" | "STOP";
 type OrderMode = "regular" | "oneClick" | "risk";
 type Panel = "watchlist" | "trade" | "bottom";
@@ -261,7 +262,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const [bottomTab, setBottomTab] = useState<BottomTab>(() => {
     if (typeof window === "undefined") return "POSICIONES";
     const saved = localStorage.getItem("kai:bottomTab");
-    return saved === "CUENTAS" || saved === "POSICIONES" || saved === "ORDENES"
+    return saved === "CUENTAS" || saved === "POSICIONES" || saved === "ORDENES" || saved === "PINE"
       ? (saved as BottomTab)
       : "POSICIONES";
   });
@@ -367,6 +368,11 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     try {
       const raw = localStorage.getItem(`kai:tabs:${accountId}`);
       setOpenSymbols(raw ? (JSON.parse(raw) as string[]) : []);
+      // Símbolo ACTIVO por cuenta: al refrescar vuelves al mismo instrumento.
+      // Si no hay guardado se limpia y el default-pick elige (validado luego
+      // contra el catálogo por el efecto existente).
+      const savedSel = localStorage.getItem(`kai:selSymbol:${accountId}`);
+      setSelectedSymbol(savedSel || "");
     } catch {
       setOpenSymbols([]);
     }
@@ -379,6 +385,19 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
       /* ignore */
     }
   }, [accountId, openSymbols]);
+  // Persiste el símbolo activo SOLO cuando cambia (deps sin accountId: un
+  // cambio de cuenta no debe estampar el símbolo viejo en la cuenta nueva).
+  const accountIdForSymbolRef = useRef(accountId);
+  accountIdForSymbolRef.current = accountId;
+  useEffect(() => {
+    const acc = accountIdForSymbolRef.current;
+    if (!acc || !selectedSymbol) return;
+    try {
+      localStorage.setItem(`kai:selSymbol:${acc}`, selectedSymbol);
+    } catch {
+      /* ignore */
+    }
+  }, [selectedSymbol]);
 
   const openSymbol = useCallback((sym: string) => {
     setOpenSymbols((prev) => (prev.includes(sym) ? prev : [...prev, sym]));
@@ -1222,7 +1241,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
           <div className={cn("border-t border-white/10 bg-[#0d0f16] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
             <div className="flex items-center justify-between border-b border-white/10 px-2 sm:px-3 py-1.5">
               <div className="flex gap-2 sm:gap-4 text-xs overflow-x-auto">
-                {(["CUENTAS", "POSICIONES", "ORDENES"] as const).map((t) => (
+                {(["CUENTAS", "POSICIONES", "ORDENES", "PINE"] as const).map((t) => (
                   <button
                     key={t}
                     onClick={() => {
@@ -1238,7 +1257,9 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                       ? `CUENTAS (${routeAccounts.length})`
                       : t === "POSICIONES"
                         ? `POSICIONES (${positions.length})`
-                        : `ÓRDENES (${orders.length + historyTrades.length})`}
+                        : t === "ORDENES"
+                          ? `ÓRDENES (${orders.length + historyTrades.length})`
+                          : "PINE"}
                   </button>
                 ))}
               </div>
@@ -1470,7 +1491,7 @@ function TopHeader({
 }: {
   accountName: string;
   accountNumber: string;
-  accounts: Array<{ id: string; name: string; providerAccountId?: string | null; status?: string }>;
+  accounts: Array<{ id: string; name: string; providerAccountId?: string | null; status?: string; blown?: boolean }>;
   onSelect: (id: string) => void;
   marketConnected: boolean;
   connQuality: "good" | "weak" | "bad";
@@ -2307,7 +2328,7 @@ function BottomPanel({
   positions: CopyTradingPosition[];
   loading: boolean;
   activeTab: BottomTab;
-  accounts: Array<{ id: string; name: string; providerAccountId?: string | null; status?: string; accountType?: string | null; balance?: number | null; equity?: number | null }>;
+  accounts: Array<{ id: string; name: string; providerAccountId?: string | null; status?: string; accountType?: string | null; balance?: number | null; equity?: number | null; blown?: boolean }>;
   totalPnl: number;
   balance: number | null;
   equity: number | null;
@@ -2383,6 +2404,7 @@ function BottomPanel({
 
   return (
     <>
+      {activeTab === "PINE" && <PineEditorPanel />}
       {activeTab === "CUENTAS" && (
         <div className="flex-1 overflow-y-auto">
           {accounts.length === 0 ? (
