@@ -38,10 +38,9 @@ describe("parser", () => {
     if (!res.ok) expect(res.error.message).toContain("plot");
   });
 
-  it("input.* explica que llega en fase 2", () => {
-    const res = compilePine('len = input.int(9, "L")\nplot(ta.ema(close, 9))');
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error.message).toContain("fase 2");
+  it("input.* compila usando su valor por defecto", () => {
+    const res = compilePine('len = input.int(9, "L")\nplot(ta.ema(close, len))');
+    expect(res.ok).toBe(true);
   });
 
   it("lee título y overlay de indicator()", () => {
@@ -157,6 +156,93 @@ describe("ta.*", () => {
     const res = compilePine("m = ta.sma(close, 0)\nplot(m)");
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error.message).toContain("length");
+  });
+});
+
+describe("estrategias", () => {
+  it("parsea strategy() con if indentado y strategy.entry", () => {
+    const c = compileOk(
+      'strategy("S", overlay=true, initial_capital=5000)\n' +
+        "fast = ta.ema(close, 2)\n" +
+        "slow = ta.ema(close, 4)\n" +
+        "if ta.crossover(fast, slow)\n" +
+        '    strategy.entry("L", strategy.long)\n' +
+        "if ta.crossunder(fast, slow)\n" +
+        '    strategy.entry("S", strategy.short)\n' +
+        "plot(fast)\n",
+    );
+    expect(c.isStrategy).toBe(true);
+  });
+
+  it("cruce genera trades y el reverse cierra el anterior", () => {
+    const c = compileOk(
+      'strategy("S")\n' +
+        "m = ta.sma(close, 2)\n" +
+        "if ta.crossover(close, m)\n" +
+        '    strategy.entry("L", strategy.long)\n' +
+        "if ta.crossunder(close, m)\n" +
+        '    strategy.entry("S", strategy.short)\n' +
+        "plot(m)\n",
+    );
+    // sube, baja, sube → al menos un trade cerrado por reversa
+    const report = c.runStrategy(bars([10, 11, 14, 12, 9, 8, 12, 15]))!;
+    expect(report.trades.length).toBeGreaterThanOrEqual(1);
+    const reversed = report.trades.filter((t) => t.exitReason === "signal");
+    expect(reversed.length).toBeGreaterThanOrEqual(1);
+    // equity coherente: capital inicial + net (sin abierta) ≈ última equity
+    const last = report.equity[report.equity.length - 1];
+    const expected = report.initialCapital + report.netProfit + (report.openPosition?.unrealized ?? 0);
+    expect(last).toBeCloseTo(expected, 6);
+  });
+
+  it("strategy.exit con stop se ejecuta al tocar el nivel", () => {
+    const data: PineBar[] = [
+      { open: 100, high: 101, low: 99, close: 100, volume: 1 },
+      { open: 100, high: 102, low: 100, close: 101, volume: 1 }, // entra long al cierre
+      { open: 101, high: 101, low: 94, close: 95, volume: 1 }, // toca el stop 98
+    ];
+    const c = compileOk(
+      'strategy("S")\n' +
+        "if close > open\n" +
+        '    strategy.entry("L", strategy.long)\n' +
+        "if strategy.position_size > 0\n" +
+        "    strategy.exit(stop=98)\n" +
+        "plot(close)\n",
+    );
+    const report = c.runStrategy(data)!;
+    expect(report.trades.length).toBe(1);
+    expect(report.trades[0].exitReason).toBe("stop");
+    expect(report.trades[0].exitPrice).toBe(98);
+    expect(report.trades[0].pnl).toBeCloseTo(98 - 101);
+  });
+
+  it("input.int se evalúa a su default", () => {
+    const c = compileOk('len = input.int(3, title="L")\nm = ta.sma(close, len)\nplot(m)');
+    const rows = c.calc(bars([1, 2, 3, 4]));
+    expect(rows[2].p0).toBeCloseTo(2);
+  });
+
+  it(":= reasigna dentro de un if", () => {
+    const c = compileOk("x = 0\nif close > open\n    x := 5\nelse\n    x := -5\nplot(x)");
+    const data: PineBar[] = [
+      { open: 1, high: 3, low: 0, close: 2, volume: 1 },
+      { open: 3, high: 4, low: 1, close: 2, volume: 1 },
+    ];
+    const rows = c.calc(data);
+    expect(rows[0].p0).toBe(5);
+    expect(rows[1].p0).toBe(-5);
+  });
+
+  it(":= sobre variable no definida da error claro", () => {
+    const res = compilePine("if close > open\n    y := 1\nplot(close)");
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.message).toContain("no está definida");
+  });
+
+  it("runStrategy es null para indicadores", () => {
+    const c = compileOk("plot(close)");
+    expect(c.isStrategy).toBe(false);
+    expect(c.runStrategy(bars([1, 2, 3]))).toBeNull();
   });
 });
 

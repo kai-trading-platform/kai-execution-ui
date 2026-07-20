@@ -2,8 +2,11 @@
 // Sin dependencias: tokenizer a mano + Pratt parser. Los errores llevan línea
 // 1-based para que la consola del editor los marque como TradingView.
 //
-// El subset es LINE-ORIENTED: cada sentencia vive en su propia línea
-// (asignación, plot/hline, indicator). No hay if/for/funciones de usuario.
+// Fase 2: además de indicadores, soporta ESTRATEGIAS —
+//   strategy("Título", overlay=?, initial_capital=?)
+//   bloques `if cond` / `else` por INDENTACIÓN (como Pine), reasignación `:=`,
+//   input.int/float/bool (se evalúan a su default; panel de inputs = fase 3),
+//   strategy.entry/close/exit y las series strategy.position_size / _avg_price.
 
 export class PineError extends Error {
   readonly line: number;
@@ -35,16 +38,31 @@ export type Expr =
   | { kind: "bin"; op: string; left: Expr; right: Expr }
   | { kind: "ternary"; cond: Expr; then: Expr; else: Expr };
 
+export type StrategyMethod = "entry" | "close" | "exit";
+
 export type Stmt =
-  | { kind: "indicator"; title: string; overlay: boolean; line: number }
   | { kind: "assign"; name: string; expr: Expr; line: number }
+  | { kind: "reassign"; name: string; expr: Expr; line: number }
   | { kind: "plot"; expr: Expr; color: Expr | null; title: string | null; linewidth: number; line: number }
-  | { kind: "hline"; value: Expr; color: Expr | null; title: string | null; line: number };
+  | { kind: "hline"; value: Expr; color: Expr | null; title: string | null; line: number }
+  | { kind: "if"; cond: Expr; then: Stmt[]; else: Stmt[] | null; line: number }
+  | {
+      kind: "strategy";
+      method: StrategyMethod;
+      /** entry: dirección 1 (long) / -1 (short). */
+      direction: Expr | null;
+      /** exit: niveles stop/limit (null si no se pasó). */
+      stop: Expr | null;
+      limit: Expr | null;
+      line: number;
+    };
 
 export interface PineProgram {
   title: string;
   overlay: boolean;
-  statements: Stmt[]; // solo assign/plot/hline, en orden
+  isStrategy: boolean;
+  initialCapital: number;
+  statements: Stmt[];
 }
 
 // ── Tokenizer ────────────────────────────────────────────────────────────────
@@ -55,7 +73,7 @@ interface Token {
   col: number;
 }
 
-const OPS = ["==", "!=", ">=", "<=", "and", "or", "not", "?", ":", ">", "<", "+", "-", "*", "/", "%", "(", ")", "[", "]", ",", "=", "."];
+const OPS = [":=", "==", "!=", ">=", "<=", "and", "or", "not", "?", ":", ">", "<", "+", "-", "*", "/", "%", "(", ")", "[", "]", ",", "=", "."];
 
 function tokenizeLine(line: string, lineNo: number): Token[] {
   const out: Token[] = [];
@@ -110,7 +128,7 @@ function tokenizeLine(line: string, lineNo: number): Token[] {
 
 // ── Parser (Pratt) ───────────────────────────────────────────────────────────
 
-const NAMESPACES = new Set(["ta", "math", "color", "input"]);
+const NAMESPACES = new Set(["ta", "math", "color", "input", "strategy"]);
 
 class LineParser {
   private pos = 0;
@@ -122,6 +140,10 @@ class LineParser {
 
   peek(): Token | null {
     return this.tokens[this.pos] ?? null;
+  }
+
+  peekAt(offset: number): Token | null {
+    return this.tokens[this.pos + offset] ?? null;
   }
 
   atOp(value: string): boolean {
@@ -203,10 +225,10 @@ class LineParser {
       return e;
     }
     if (t.type === "ident") {
-      // ¿miembro de namespace? ta.ema / color.red / math.abs
+      // ¿miembro de namespace? ta.ema / color.red / strategy.long / math.abs
       if (this.atOp(".")) {
         if (!NAMESPACES.has(t.value)) {
-          throw new PineError(`Namespace desconocido '${t.value}.' (soportados: ta, math, color)`, this.line);
+          throw new PineError(`Namespace desconocido '${t.value}.' (soportados: ta, math, color, input, strategy)`, this.line);
         }
         this.take();
         const member = this.take();
@@ -232,7 +254,7 @@ class LineParser {
       for (;;) {
         // ¿argumento nombrado? ident '=' (pero no '==')
         const t = this.peek();
-        const t2 = this.tokens[this.pos + 1];
+        const t2 = this.peekAt(1);
         if (t && t.type === "ident" && t2 && t2.type === "op" && t2.value === "=") {
           this.take();
           this.take();
@@ -281,7 +303,7 @@ function binPrec(op: string): number {
   }
 }
 
-// ── Programa ─────────────────────────────────────────────────────────────────
+// ── Constantes / helpers de args ─────────────────────────────────────────────
 
 function constNumber(e: Expr, what: string, line: number): number {
   if (e.kind === "num") return e.value;
@@ -299,82 +321,244 @@ function constBool(e: Expr, what: string, line: number): boolean {
   throw new PineError(`${what} debe ser true o false`, line);
 }
 
+// ── Transformación input.* → literal (defaults; panel de inputs = fase 3) ───
+
+function resolveInputs(e: Expr): Expr {
+  switch (e.kind) {
+    case "call": {
+      if (e.ns === "input") {
+        if (!["int", "float", "bool"].includes(e.name)) {
+          throw new PineError(`input.${e.name} no soportado (int, float, bool)`, e.line);
+        }
+        const dflt = e.args[0];
+        if (!dflt) throw new PineError(`input.${e.name}() necesita el valor por defecto`, e.line);
+        if (e.name === "bool") return { kind: "num", value: constBool(dflt, "input.bool", e.line) ? 1 : 0 };
+        return { kind: "num", value: constNumber(dflt, `input.${e.name}`, e.line) };
+      }
+      return {
+        ...e,
+        args: e.args.map(resolveInputs),
+        named: Object.fromEntries(Object.entries(e.named).map(([k, v]) => [k, resolveInputs(v)])),
+      };
+    }
+    case "index":
+      return { ...e, base: resolveInputs(e.base), offset: resolveInputs(e.offset) };
+    case "unary":
+      return { ...e, expr: resolveInputs(e.expr) };
+    case "bin":
+      return { ...e, left: resolveInputs(e.left), right: resolveInputs(e.right) };
+    case "ternary":
+      return { ...e, cond: resolveInputs(e.cond), then: resolveInputs(e.then), else: resolveInputs(e.else) };
+    default:
+      return e;
+  }
+}
+
+// ── Programa (bloques por indentación) ───────────────────────────────────────
+
+interface SrcLine {
+  indent: number;
+  tokens: Token[];
+  lineNo: number;
+}
+
 export function parsePine(source: string): PineProgram {
   let siteCounter = 0;
   const nextSiteId = () => ++siteCounter;
 
   let title = "Kai Pine";
   let overlay = true;
-  const statements: Stmt[] = [];
-  const definedVars = new Set<string>();
+  let isStrategy = false;
+  let initialCapital = 10_000;
+  let declSeen = false;
 
-  const lines = source.split(/\r?\n/);
-  for (let idx = 0; idx < lines.length; idx++) {
+  const rawLines = source.split(/\r?\n/);
+  const src: SrcLine[] = [];
+  for (let idx = 0; idx < rawLines.length; idx++) {
     const lineNo = idx + 1;
-    const raw = lines[idx];
+    const raw = rawLines[idx];
     const tokens = tokenizeLine(raw, lineNo);
     if (tokens.length === 0) continue;
+    const indent = /^[\t ]*/.exec(raw)![0].replace(/\t/g, "    ").length;
+    src.push({ indent, tokens, lineNo });
+  }
 
+  const definedVars = new Set<string>();
+
+  // Parse recursivo de un bloque: consume líneas con indent >= blockIndent
+  // (las de MAYOR indent pertenecen a sub-bloques de un if anterior).
+  function parseBlock(pos: { i: number }, blockIndent: number, topLevel: boolean): Stmt[] {
+    const out: Stmt[] = [];
+    while (pos.i < src.length) {
+      const line = src[pos.i];
+      if (line.indent < blockIndent) break;
+      if (line.indent > blockIndent) {
+        throw new PineError("Indentación inesperada (¿sobra un espacio?)", line.lineNo);
+      }
+      const stmt = parseStatement(pos, blockIndent, topLevel);
+      if (stmt) out.push(stmt);
+    }
+    return out;
+  }
+
+  function parseStatement(pos: { i: number }, blockIndent: number, topLevel: boolean): Stmt | null {
+    const { tokens, lineNo } = src[pos.i];
     const p = new LineParser(tokens, lineNo, nextSiteId);
     const first = tokens[0];
     const second = tokens[1];
+    pos.i++;
 
-    // indicator("Título", overlay=true)
-    if (first.type === "ident" && first.value === "indicator" && second?.type === "op" && second.value === "(") {
-      p.take(); // indicator
-      const call = p.parseCall(null, "indicator");
-      if (call.kind !== "call") throw new PineError("indicator() inválido", lineNo);
-      if (call.args[0]) title = constString(call.args[0], "El título de indicator()", lineNo);
+    // indicator("...") / strategy("...") — solo top-level, define el tipo.
+    if (
+      topLevel &&
+      first.type === "ident" &&
+      (first.value === "indicator" || first.value === "strategy") &&
+      second?.type === "op" &&
+      second.value === "("
+    ) {
+      if (declSeen) throw new PineError("indicator()/strategy() solo puede declararse una vez", lineNo);
+      declSeen = true;
+      p.take();
+      const call = p.parseCall(null, first.value);
+      if (call.kind !== "call") throw new PineError(`${first.value}() inválido`, lineNo);
+      if (call.args[0]) title = constString(call.args[0], "El título", lineNo);
       if (call.named.overlay) overlay = constBool(call.named.overlay, "overlay", lineNo);
-      if (!p.atEnd()) throw new PineError("Contenido extra tras indicator()", lineNo);
-      continue;
+      if (first.value === "strategy") {
+        isStrategy = true;
+        if (call.named.initial_capital) {
+          initialCapital = constNumber(call.named.initial_capital, "initial_capital", lineNo);
+        }
+      }
+      if (!p.atEnd()) throw new PineError(`Contenido extra tras ${first.value}()`, lineNo);
+      return null;
     }
 
-    // asignación: ident '=' expr  (el '=' pelado, no '==')
-    if (first.type === "ident" && second?.type === "op" && second.value === "=") {
+    // if cond  →  bloque indentado; opcional `else` al mismo nivel.
+    if (first.type === "ident" && first.value === "if") {
+      p.take();
+      const cond = resolveInputs(p.parseExpr(0));
+      validateExpr(cond, definedVars, lineNo);
+      if (!p.atEnd()) throw new PineError("Contenido extra tras la condición del if (el cuerpo va indentado en las líneas siguientes)", lineNo);
+      const bodyIndent = src[pos.i]?.indent ?? -1;
+      if (pos.i >= src.length || bodyIndent <= blockIndent) {
+        throw new PineError("El if necesita un cuerpo indentado en la línea siguiente", lineNo);
+      }
+      const thenStmts = parseBlock(pos, bodyIndent, false);
+      let elseStmts: Stmt[] | null = null;
+      const next = src[pos.i];
+      if (next && next.indent === blockIndent && next.tokens[0]?.type === "ident" && next.tokens[0].value === "else") {
+        if (next.tokens.length > 1) throw new PineError("'else' va solo en su línea (cuerpo indentado debajo)", next.lineNo);
+        pos.i++;
+        const elseIndent = src[pos.i]?.indent ?? -1;
+        if (pos.i >= src.length || elseIndent <= blockIndent) {
+          throw new PineError("El else necesita un cuerpo indentado en la línea siguiente", next.lineNo);
+        }
+        elseStmts = parseBlock(pos, elseIndent, false);
+      }
+      return { kind: "if", cond, then: thenStmts, else: elseStmts, line: lineNo };
+    }
+
+    // strategy.entry / strategy.close / strategy.exit
+    if (
+      first.type === "ident" &&
+      first.value === "strategy" &&
+      second?.type === "op" &&
+      second.value === "."
+    ) {
+      p.take();
+      p.take();
+      const methodTok = p.take();
+      if (methodTok.type !== "ident" || !["entry", "close", "exit"].includes(methodTok.value)) {
+        throw new PineError(`strategy.${methodTok.value} no soportado (entry, close, exit)`, lineNo);
+      }
+      const method = methodTok.value as StrategyMethod;
+      const call = p.parseCall("strategy", method);
+      if (call.kind !== "call") throw new PineError("llamada inválida", lineNo);
+      if (!p.atEnd()) throw new PineError(`Contenido extra tras strategy.${method}()`, lineNo);
+      let direction: Expr | null = null;
+      let stop: Expr | null = null;
+      let limit: Expr | null = null;
+      if (method === "entry") {
+        // strategy.entry("id", strategy.long|strategy.short)
+        const dir = call.args[1] ?? null;
+        if (!dir) throw new PineError('strategy.entry("id", strategy.long | strategy.short)', lineNo);
+        direction = resolveInputs(dir);
+        validateExpr(direction, definedVars, lineNo);
+      } else if (method === "exit") {
+        stop = call.named.stop ? resolveInputs(call.named.stop) : null;
+        limit = call.named.limit ? resolveInputs(call.named.limit) : null;
+        if (!stop && !limit) throw new PineError("strategy.exit necesita stop= y/o limit=", lineNo);
+        if (stop) validateExpr(stop, definedVars, lineNo);
+        if (limit) validateExpr(limit, definedVars, lineNo);
+      }
+      return { kind: "strategy", method, direction, stop, limit, line: lineNo };
+    }
+
+    // asignación (=) o reasignación (:=)
+    if (first.type === "ident" && second?.type === "op" && (second.value === "=" || second.value === ":=")) {
       const name = first.value;
       if (BUILTIN_SERIES.has(name)) throw new PineError(`No puedes reasignar la serie integrada '${name}'`, lineNo);
       p.take();
       p.take();
-      const expr = p.parseExpr(0);
+      const expr = resolveInputs(p.parseExpr(0));
       if (!p.atEnd()) throw new PineError("Contenido extra tras la expresión", lineNo);
       validateExpr(expr, definedVars, lineNo);
+      if (second.value === ":=") {
+        if (!definedVars.has(name)) {
+          throw new PineError(`':=' reasigna una variable existente y '${name}' no está definida (usa '=' primero)`, lineNo);
+        }
+        return { kind: "reassign", name, expr, line: lineNo };
+      }
       definedVars.add(name);
-      statements.push({ kind: "assign", name, expr, line: lineNo });
-      continue;
+      return { kind: "assign", name, expr, line: lineNo };
     }
 
-    // plot(...) / hline(...)
+    // plot(...) / hline(...) — solo top-level (igual que Pine).
     if (first.type === "ident" && (first.value === "plot" || first.value === "hline") && second?.type === "op" && second.value === "(") {
+      if (!topLevel) throw new PineError(`${first.value}() solo puede ir en el nivel superior (no dentro de un if)`, lineNo);
       p.take();
       const call = p.parseCall(null, first.value);
       if (call.kind !== "call") throw new PineError("llamada inválida", lineNo);
       if (!p.atEnd()) throw new PineError(`Contenido extra tras ${first.value}()`, lineNo);
       if (call.args.length < 1) throw new PineError(`${first.value}() necesita al menos 1 argumento`, lineNo);
-      validateExpr(call.args[0], definedVars, lineNo);
+      const mainArg = resolveInputs(call.args[0]);
+      validateExpr(mainArg, definedVars, lineNo);
       const colorExpr = call.named.color ?? null;
       if (colorExpr) validateColorExpr(colorExpr, lineNo);
       const titleArg = call.named.title ? constString(call.named.title, "title", lineNo) : null;
       if (first.value === "plot") {
         const lw = call.named.linewidth ? constNumber(call.named.linewidth, "linewidth", lineNo) : 1;
-        statements.push({ kind: "plot", expr: call.args[0], color: colorExpr, title: titleArg, linewidth: lw, line: lineNo });
-      } else {
-        statements.push({ kind: "hline", value: call.args[0], color: colorExpr, title: titleArg, line: lineNo });
+        return { kind: "plot", expr: mainArg, color: colorExpr, title: titleArg, linewidth: lw, line: lineNo };
       }
-      continue;
+      return { kind: "hline", value: mainArg, color: colorExpr, title: titleArg, line: lineNo };
     }
 
     throw new PineError(
-      "Sentencia no soportada: usa asignaciones (x = ...), plot(...), hline(...) o indicator(...)",
+      "Sentencia no soportada: asignaciones (x = ...), if/else, strategy.entry/close/exit, plot(...), hline(...), indicator(...) o strategy(...)",
       lineNo,
     );
   }
 
-  if (!statements.some((s) => s.kind === "plot" || s.kind === "hline")) {
-    throw new PineError("El script no tiene plot() ni hline(): no habría nada que dibujar", lines.length || 1);
+  const pos = { i: 0 };
+  const statements = parseBlock(pos, 0, true);
+  if (pos.i < src.length) {
+    throw new PineError("Indentación inválida", src[pos.i].lineNo);
   }
 
-  return { title, overlay, statements };
+  const hasOutput =
+    statements.some((s) => s.kind === "plot" || s.kind === "hline") ||
+    (isStrategy && hasStrategyCall(statements));
+  if (!hasOutput) {
+    throw new PineError("El script no tiene plot(), hline() ni órdenes de estrategia: no habría nada que mostrar", rawLines.length || 1);
+  }
+
+  return { title, overlay, isStrategy, initialCapital, statements };
+}
+
+function hasStrategyCall(stmts: Stmt[]): boolean {
+  return stmts.some(
+    (s) => s.kind === "strategy" || (s.kind === "if" && (hasStrategyCall(s.then) || (s.else ? hasStrategyCall(s.else) : false))),
+  );
 }
 
 // ── Validación semántica ligera ──────────────────────────────────────────────
@@ -398,6 +582,8 @@ export const TA_FUNCTIONS: Record<string, number> = {
 };
 
 export const MATH_FUNCTIONS = new Set(["abs", "max", "min", "round", "floor", "ceil", "sqrt", "pow", "log"]);
+
+export const STRATEGY_MEMBERS = new Set(["long", "short", "position_size", "position_avg_price"]);
 
 export const COLOR_CONSTANTS: Record<string, string> = {
   red: "#ef5350",
@@ -436,6 +622,12 @@ function validateExpr(e: Expr, definedVars: Set<string>, line: number): void {
         if (!(e.name in COLOR_CONSTANTS)) throw new PineError(`Color desconocido 'color.${e.name}'`, line);
         return;
       }
+      if (e.ns === "strategy") {
+        if (!STRATEGY_MEMBERS.has(e.name)) {
+          throw new PineError(`'strategy.${e.name}' no soportado (long, short, position_size, position_avg_price)`, line);
+        }
+        return;
+      }
       throw new PineError(`'${e.ns}.${e.name}' no es un valor (¿faltan paréntesis?)`, line);
     case "call": {
       if (e.ns === "ta") {
@@ -448,10 +640,13 @@ function validateExpr(e: Expr, definedVars: Set<string>, line: number): void {
         if (!MATH_FUNCTIONS.has(e.name)) throw new PineError(`Función desconocida 'math.${e.name}'`, line);
       } else if (e.ns === "color") {
         if (e.name !== "rgb") throw new PineError(`Función desconocida 'color.${e.name}'`, line);
+      } else if (e.ns === "strategy") {
+        throw new PineError("strategy.* como llamada va en su propia línea (entry/close/exit)", line);
       } else if (e.ns === "input") {
-        throw new PineError("input.* llega en fase 2 — usa un número literal por ahora", line);
+        // resolveInputs debió reemplazarla; si llega aquí es un uso raro.
+        throw new PineError("input.* solo puede usarse como valor directo (x = input.int(20))", line);
       } else {
-        throw new PineError(`Función desconocida '${e.name}' (soportadas: ta.*, math.*, color.rgb)`, line);
+        throw new PineError(`Función desconocida '${e.name}' (soportadas: ta.*, math.*, color.rgb, input.*)`, line);
       }
       for (const a of e.args) validateExpr(a, definedVars, line);
       for (const a of Object.values(e.named)) validateExpr(a, definedVars, line);

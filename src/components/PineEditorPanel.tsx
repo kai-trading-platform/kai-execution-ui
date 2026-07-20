@@ -4,6 +4,7 @@ import { ChevronDown, Copy, LineChart, Pencil, Play, Plus, Save, Trash2, Waypoin
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { compilePine } from "@/lib/pine/compilePine";
+import type { StrategyReport } from "@/lib/pine/pineRuntime";
 import { PINE_EXAMPLES } from "@/lib/pine/examples";
 import { applyPineScript, isPineApplied, removePineScript } from "@/lib/pine/pineChart";
 import { getActiveProChart } from "@/lib/chartPro/chartInstance";
@@ -26,19 +27,23 @@ plot(close)
 `;
 }
 
-// Plantilla de ESTRATEGIA (fase 1: señales 1/-1 en panel propio; las órdenes
-// simuladas de strategy.entry/exit llegan en fase 2).
+// Plantilla de ESTRATEGIA real: strategy.entry/exit + Probador integrado.
 function strategyTemplate(username: string): string {
   return `// Este código Kai Pine corre en tu terminal — sintaxis Pine v5 (subset).
 // © ${username}
 
 //@version=6
-indicator("Mi estrategia", overlay=false)
-fast = ta.ema(close, 9)
-slow = ta.ema(close, 21)
-senal = ta.crossover(fast, slow) ? 1 : ta.crossunder(fast, slow) ? -1 : 0
-plot(senal, color=color.aqua, title="Señal (1=compra, -1=venta)")
-hline(0, color=color.gray)
+strategy("Mi estrategia", overlay=true, initial_capital=10000)
+longitudRapida = input.int(9, title="EMA rápida")
+longitudLenta = input.int(21, title="EMA lenta")
+fast = ta.ema(close, longitudRapida)
+slow = ta.ema(close, longitudLenta)
+if ta.crossover(fast, slow)
+    strategy.entry("L", strategy.long)
+if ta.crossunder(fast, slow)
+    strategy.entry("S", strategy.short)
+plot(fast, color=color.green, title="EMA rápida")
+plot(slow, color=color.red, title="EMA lenta")
 `;
 }
 
@@ -54,6 +59,8 @@ export function PineEditorPanel() {
   const [scriptMenuOpen, setScriptMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
+  // Probador de estrategias (backtest sobre las velas del chart actual).
+  const [testerReport, setTesterReport] = useState<StrategyReport | null>(null);
   // Tick para re-leer isPineApplied tras aplicar/quitar.
   const [, setAppliedTick] = useState(0);
 
@@ -167,6 +174,41 @@ export function PineEditorPanel() {
     setDirty(false);
     setConsoleMsg({ tone: "info", text: `Script '${active.name}' eliminado` });
   }, [active, scripts, persist]);
+
+  // Probador: compila y corre el broker simulado sobre las velas del chart.
+  const handleTestStrategy = useCallback(() => {
+    const res = compilePine(source);
+    if (!res.ok) {
+      setConsoleMsg({ tone: "error", text: `Línea ${res.error.line}: ${res.error.message}` });
+      return;
+    }
+    if (!res.compiled.isStrategy) {
+      setConsoleMsg({ tone: "info", text: "Este script es un indicador — para el Probador usa strategy(...) con strategy.entry/exit" });
+      return;
+    }
+    const chart = getActiveProChart();
+    const dataList = chart?.getDataList?.() ?? [];
+    if (dataList.length === 0) {
+      setConsoleMsg({ tone: "error", text: "El chart aún no tiene velas para probar" });
+      return;
+    }
+    const bars = dataList.map((d) => ({
+      open: d.open,
+      high: d.high,
+      low: d.low,
+      close: d.close,
+      volume: d.volume ?? 0,
+      time: d.timestamp,
+    }));
+    const report = res.compiled.runStrategy(bars);
+    setTesterReport(report);
+    setConsoleMsg(
+      report && report.trades.length === 0
+        ? { tone: "info", text: "Probador: la estrategia no generó trades en las velas cargadas" }
+        : { tone: "ok", text: `Probador: ${report?.trades.length ?? 0} trades sobre ${bars.length} velas del chart` },
+    );
+    handleSave();
+  }, [source, handleSave]);
 
   // ── Acciones del menú del nombre (estilo TradingView) ──────────────────────
 
@@ -433,6 +475,15 @@ export function PineEditorPanel() {
           </button>
           <button
             type="button"
+            onClick={handleTestStrategy}
+            disabled={!source.trim()}
+            className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-[#2f6bff]/40 bg-[#2f6bff]/10 text-[#7ea6ff] hover:bg-[#2f6bff]/20 disabled:opacity-30"
+            title="Backtest sobre las velas cargadas en el chart"
+          >
+            <Waypoints className="h-3 w-3" /> Probar
+          </button>
+          <button
+            type="button"
             onClick={handleRemoveFromChart}
             disabled={!active || !applied}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-white/15 text-white/60 hover:bg-white/5 disabled:opacity-30"
@@ -473,6 +524,69 @@ export function PineEditorPanel() {
             className="flex-1 resize-none bg-transparent outline-none pt-2 px-2 font-mono text-[11px] leading-[18px] text-white/85 placeholder:text-white/25"
           />
         </div>
+
+        {/* Probador de estrategias (estilo Strategy Tester) */}
+        {testerReport && (
+          <div className="border-t border-white/10 bg-[#10131c] shrink-0">
+            <div className="px-3 py-1 flex items-center gap-4 text-[10px]">
+              <span className="uppercase tracking-wide text-white/40">Probador</span>
+              <span className={cn("font-mono", testerReport.netProfit >= 0 ? "text-emerald-400" : "text-red-400")}>
+                Net: {testerReport.netProfit >= 0 ? "+" : ""}
+                {testerReport.netProfit.toFixed(2)} pts
+              </span>
+              <span className="text-white/60 font-mono">Trades: {testerReport.trades.length}</span>
+              <span className="text-white/60 font-mono">
+                Ganadoras: {testerReport.winRate == null ? "—" : `${testerReport.winRate.toFixed(1)}%`}
+              </span>
+              <span className="text-white/60 font-mono">
+                PF: {testerReport.profitFactor == null ? "—" : testerReport.profitFactor.toFixed(2)}
+              </span>
+              <span className="text-white/60 font-mono">DD máx: {testerReport.maxDrawdown.toFixed(2)} pts</span>
+              {testerReport.openPosition && (
+                <span className="text-amber-400/80 font-mono">
+                  Abierta: {testerReport.openPosition.side === "long" ? "LONG" : "SHORT"} ({testerReport.openPosition.unrealized >= 0 ? "+" : ""}
+                  {testerReport.openPosition.unrealized.toFixed(2)})
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setTesterReport(null)}
+                className="ml-auto text-white/40 hover:text-white/80"
+                aria-label="Cerrar probador"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+            {testerReport.trades.length > 0 && (
+              <div className="max-h-16 overflow-y-auto px-3 pb-1 text-[9px] font-mono text-white/50">
+                {testerReport.trades
+                  .slice()
+                  .reverse()
+                  .slice(0, 50)
+                  .map((t, idx) => (
+                    <div key={idx} className="flex gap-3">
+                      <span className={t.side === "long" ? "text-emerald-400/80" : "text-red-400/80"}>
+                        {t.side === "long" ? "LONG " : "SHORT"}
+                      </span>
+                      <span>
+                        {t.entryPrice.toFixed(2)} → {t.exitPrice.toFixed(2)}
+                      </span>
+                      <span className={t.pnl >= 0 ? "text-emerald-400/80" : "text-red-400/80"}>
+                        {t.pnl >= 0 ? "+" : ""}
+                        {t.pnl.toFixed(2)}
+                      </span>
+                      <span className="text-white/30">{t.exitReason}</span>
+                      {t.exitTime != null && (
+                        <span className="text-white/30">
+                          {new Date(t.exitTime).toLocaleString("es-DO", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
 
         <div
           className={cn(

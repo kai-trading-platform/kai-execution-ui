@@ -13,6 +13,36 @@ export interface PineBar {
   low: number;
   close: number;
   volume: number;
+  /** Timestamp ms (opcional; para las horas de los trades del Probador). */
+  time?: number;
+}
+
+// ── Probador de estrategias ──────────────────────────────────────────────────
+
+export interface StrategyTrade {
+  side: "long" | "short";
+  entryPrice: number;
+  entryTime: number | null;
+  exitPrice: number;
+  exitTime: number | null;
+  /** PnL en puntos de precio por 1 unidad. */
+  pnl: number;
+  /** Cómo se cerró: señal, stop, limit o fin de datos. */
+  exitReason: "signal" | "stop" | "limit" | "end";
+}
+
+export interface StrategyReport {
+  trades: StrategyTrade[];
+  netProfit: number;
+  grossProfit: number;
+  grossLoss: number;
+  profitFactor: number | null;
+  winRate: number | null;
+  maxDrawdown: number;
+  initialCapital: number;
+  /** Curva de equity (capital + PnL acumulado en puntos) por barra. */
+  equity: number[];
+  openPosition: { side: "long" | "short"; entryPrice: number; unrealized: number } | null;
 }
 
 // ── Estados por call-site ────────────────────────────────────────────────────
@@ -52,9 +82,16 @@ type SiteState = EmaState | WindowState | RsiState | PrevState | ChangeState | R
 export interface RunResult {
   /** Una entrada por plot/hline (en orden de aparición): serie de valores. */
   series: Array<Array<number | null>>;
+  /** Solo para strategy(): reporte del Probador. */
+  strategy: StrategyReport | null;
 }
 
-export function runPine(statements: Stmt[], bars: PineBar[]): RunResult {
+export interface RunOptions {
+  isStrategy?: boolean;
+  initialCapital?: number;
+}
+
+export function runPine(statements: Stmt[], bars: PineBar[], opts: RunOptions = {}): RunResult {
   const n = bars.length;
   const varBuffers = new Map<string, Float64Array>();
   const siteStates = new Map<number, SiteState>();
@@ -104,6 +141,18 @@ export function runPine(statements: Stmt[], bars: PineBar[]): RunResult {
         return buf ? buf[i] : NaN;
       }
       case "member":
+        if (e.ns === "strategy") {
+          switch (e.name) {
+            case "long":
+              return 1;
+            case "short":
+              return -1;
+            case "position_size":
+              return broker.pos;
+            case "position_avg_price":
+              return broker.pos !== 0 ? broker.avgPrice : NaN;
+          }
+        }
         return NaN; // colores se resuelven fuera del runtime numérico
       case "index": {
         const off = evalExpr(e.offset, i);
@@ -352,21 +401,127 @@ export function runPine(statements: Stmt[], bars: PineBar[]): RunResult {
     }
   }
 
-  // Prepara buffers de variables (en orden de asignación)
-  for (const s of statements) {
-    if (s.kind === "assign" && !varBuffers.has(s.name)) {
-      const buf = new Float64Array(n);
-      buf.fill(NaN);
-      varBuffers.set(s.name, buf);
+  // Prepara buffers de variables (asignaciones a cualquier profundidad)
+  const collectAssigns = (stmts: Stmt[]): void => {
+    for (const s of stmts) {
+      if ((s.kind === "assign" || s.kind === "reassign") && !varBuffers.has(s.name)) {
+        const buf = new Float64Array(n);
+        buf.fill(NaN);
+        varBuffers.set(s.name, buf);
+      }
+      if (s.kind === "if") {
+        collectAssigns(s.then);
+        if (s.else) collectAssigns(s.else);
+      }
+    }
+  };
+  collectAssigns(statements);
+
+  // ── Broker simulado (Probador) ─────────────────────────────────────────────
+  // Semántica MVP documentada: las órdenes de señal (entry/close) se ejecutan
+  // al CIERRE de la barra de la señal; stop/limit de strategy.exit se evalúan
+  // contra el high/low de las barras SIGUIENTES (gap → se llena al open). Si
+  // stop y limit caen en la misma barra gana el stop (conservador). Tamaño
+  // fijo: 1 unidad; PnL en puntos de precio.
+  const initialCapital = opts.initialCapital ?? 10_000;
+  const trades: StrategyTrade[] = [];
+  const equity: number[] = new Array(n).fill(initialCapital);
+  let realized = 0;
+
+  const broker: {
+    pos: number; // 1 long, -1 short, 0 flat (1 unidad fija en fase 2)
+    avgPrice: number;
+    entryTime: number | null;
+    stop: number | null;
+    limit: number | null;
+  } = { pos: 0, avgPrice: NaN, entryTime: null, stop: null, limit: null };
+
+  const closeTrade = (i: number, price: number, reason: StrategyTrade["exitReason"]) => {
+    if (broker.pos === 0) return;
+    const pnl = (price - broker.avgPrice) * broker.pos;
+    trades.push({
+      side: broker.pos > 0 ? "long" : "short",
+      entryPrice: broker.avgPrice,
+      entryTime: broker.entryTime,
+      exitPrice: price,
+      exitTime: bars[i]?.time ?? null,
+      pnl,
+      exitReason: reason,
+    });
+    realized += pnl;
+    broker.pos = 0;
+    broker.avgPrice = NaN;
+    broker.entryTime = null;
+    broker.stop = null;
+    broker.limit = null;
+  };
+
+  const openTrade = (i: number, dir: 1 | -1) => {
+    broker.pos = dir;
+    broker.avgPrice = bars[i].close;
+    broker.entryTime = bars[i]?.time ?? null;
+    broker.stop = null;
+    broker.limit = null;
+  };
+
+  function execStmts(stmts: Stmt[], i: number): void {
+    for (const s of stmts) {
+      switch (s.kind) {
+        case "assign":
+        case "reassign":
+          varBuffers.get(s.name)![i] = evalExpr(s.expr, i);
+          break;
+        case "if":
+          if (truthy(evalExpr(s.cond, i))) execStmts(s.then, i);
+          else if (s.else) execStmts(s.else, i);
+          break;
+        case "strategy": {
+          if (s.method === "entry") {
+            const dirV = s.direction ? evalExpr(s.direction, i) : 1;
+            const dir: 1 | -1 = dirV < 0 ? -1 : 1;
+            if (broker.pos === dir) break; // ya en esa dirección
+            if (broker.pos !== 0) closeTrade(i, bars[i].close, "signal");
+            openTrade(i, dir);
+          } else if (s.method === "close") {
+            closeTrade(i, bars[i].close, "signal");
+          } else {
+            // strategy.exit(stop=, limit=): niveles para las barras siguientes.
+            if (broker.pos !== 0) {
+              const stopV = s.stop ? evalExpr(s.stop, i) : NaN;
+              const limitV = s.limit ? evalExpr(s.limit, i) : NaN;
+              broker.stop = Number.isFinite(stopV) ? stopV : broker.stop;
+              broker.limit = Number.isFinite(limitV) ? limitV : broker.limit;
+            }
+          }
+          break;
+        }
+        // plot/hline se manejan en el loop principal (solo top-level)
+        default:
+          break;
+      }
     }
   }
 
   for (let i = 0; i < n; i++) {
+    // 1) Stops/limits pendientes contra el rango de ESTA barra (solo estrategias).
+    if (opts.isStrategy && broker.pos !== 0 && i > 0) {
+      const b = bars[i];
+      const dir = broker.pos;
+      const stop = broker.stop;
+      const limit = broker.limit;
+      if (stop != null && ((dir > 0 && b.low <= stop) || (dir < 0 && b.high >= stop))) {
+        const gapped = dir > 0 ? b.open <= stop : b.open >= stop;
+        closeTrade(i, gapped ? b.open : stop, "stop");
+      } else if (limit != null && ((dir > 0 && b.high >= limit) || (dir < 0 && b.low <= limit))) {
+        const gapped = dir > 0 ? b.open >= limit : b.open <= limit;
+        closeTrade(i, gapped ? b.open : limit, "limit");
+      }
+    }
+
+    // 2) Sentencias del script (asignaciones, ifs, órdenes) + plots top-level.
     let outIdx = 0;
     for (const s of statements) {
-      if (s.kind === "assign") {
-        varBuffers.get(s.name)![i] = evalExpr(s.expr, i);
-      } else if (s.kind === "plot") {
+      if (s.kind === "plot") {
         const v = evalExpr(s.expr, i);
         series[outIdx][i] = Number.isFinite(v) ? v : null;
         outIdx++;
@@ -374,9 +529,48 @@ export function runPine(statements: Stmt[], bars: PineBar[]): RunResult {
         const v = evalExpr(s.value, i);
         series[outIdx][i] = Number.isFinite(v) ? v : null;
         outIdx++;
+      } else {
+        execStmts([s], i);
       }
     }
+
+    // 3) Equity de la barra (realizado + flotante al cierre).
+    const unrealized = broker.pos !== 0 ? (bars[i].close - broker.avgPrice) * broker.pos : 0;
+    equity[i] = initialCapital + realized + unrealized;
   }
 
-  return { series };
+  let strategyReport: StrategyReport | null = null;
+  if (opts.isStrategy) {
+    const wins = trades.filter((t) => t.pnl > 0);
+    const losses = trades.filter((t) => t.pnl < 0);
+    const grossProfit = wins.reduce((s, t) => s + t.pnl, 0);
+    const grossLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+    let peak = -Infinity;
+    let maxDrawdown = 0;
+    for (const v of equity) {
+      if (v > peak) peak = v;
+      else maxDrawdown = Math.max(maxDrawdown, peak - v);
+    }
+    strategyReport = {
+      trades,
+      netProfit: grossProfit - grossLoss,
+      grossProfit,
+      grossLoss,
+      profitFactor: grossLoss > 0 ? grossProfit / grossLoss : null,
+      winRate: trades.length > 0 ? (wins.length / trades.length) * 100 : null,
+      maxDrawdown,
+      initialCapital,
+      equity,
+      openPosition:
+        broker.pos !== 0
+          ? {
+              side: broker.pos > 0 ? "long" : "short",
+              entryPrice: broker.avgPrice,
+              unrealized: (bars[n - 1].close - broker.avgPrice) * broker.pos,
+            }
+          : null,
+    };
+  }
+
+  return { series, strategy: strategyReport };
 }

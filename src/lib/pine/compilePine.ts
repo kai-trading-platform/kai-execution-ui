@@ -3,7 +3,7 @@
 // un error con línea para la consola del editor.
 
 import { parsePine, PineError, Stmt, evalColorExpr } from "./pineParser";
-import { runPine, PineBar } from "./pineRuntime";
+import { runPine, PineBar, StrategyReport } from "./pineRuntime";
 
 export interface CompiledFigure {
   key: string;
@@ -17,9 +17,12 @@ export interface CompiledFigure {
 export interface CompiledPine {
   title: string;
   overlay: boolean;
+  isStrategy: boolean;
   figures: CompiledFigure[];
   /** Serie por figura para una lista de velas (mismo orden que figures). */
   calc: (bars: PineBar[]) => Array<Record<string, number | null>>;
+  /** Probador: corre el broker simulado sobre las velas (null si no es strategy). */
+  runStrategy: (bars: PineBar[]) => StrategyReport | null;
 }
 
 export interface PineCompileError {
@@ -36,11 +39,15 @@ export function compilePine(source: string): CompileResult {
   let statements: Stmt[];
   let title: string;
   let overlay: boolean;
+  let isStrategy: boolean;
+  let initialCapital: number;
   try {
     const program = parsePine(source);
     statements = program.statements;
     title = program.title;
     overlay = program.overlay;
+    isStrategy = program.isStrategy;
+    initialCapital = program.initialCapital;
   } catch (err) {
     if (err instanceof PineError) {
       return { ok: false, error: { message: err.message, line: err.line } };
@@ -59,7 +66,7 @@ export function compilePine(source: string): CompileResult {
   }));
 
   const calc = (bars: PineBar[]): Array<Record<string, number | null>> => {
-    const { series } = runPine(statements, bars);
+    const { series } = runPine(statements, bars, { isStrategy, initialCapital });
     return bars.map((_, i) => {
       const row: Record<string, number | null> = {};
       for (let f = 0; f < figures.length; f++) {
@@ -67,6 +74,11 @@ export function compilePine(source: string): CompileResult {
       }
       return row;
     });
+  };
+
+  const runStrategy = (bars: PineBar[]): StrategyReport | null => {
+    if (!isStrategy) return null;
+    return runPine(statements, bars, { isStrategy, initialCapital }).strategy;
   };
 
   // Smoke-run con 3 velas sintéticas: detecta errores de runtime (p. ej. length
@@ -84,5 +96,5 @@ export function compilePine(source: string): CompileResult {
     return { ok: false, error: { message: err instanceof Error ? err.message : String(err), line: 1 } };
   }
 
-  return { ok: true, compiled: { title, overlay, figures, calc } };
+  return { ok: true, compiled: { title, overlay, isStrategy, figures, calc, runStrategy } };
 }

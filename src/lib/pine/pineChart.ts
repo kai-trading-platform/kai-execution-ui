@@ -41,6 +41,7 @@ function registerCompiled(scriptId: string, compiled: CompiledPine): void {
           low: d.low,
           close: d.close,
           volume: d.volume ?? 0,
+          time: d.timestamp,
         })),
       ),
   });
