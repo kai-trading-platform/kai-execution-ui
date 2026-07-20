@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { nestAuthFetch } from '@/api/client';
 import { AccountSymbol } from '@/types/market.types';
 
@@ -24,6 +24,8 @@ export function useAccountSymbols(accountId: string | null | undefined): UseAcco
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<Error | null>(null);
   const [loadedForAccountId, setLoadedForAccountId] = useState<string | null>(null);
+  // Generación del fetch en curso (ver fetchSymbols): invalida retries viejos.
+  const fetchGenerationRef = useRef(0);
 
   const fetchSymbols = useCallback(async () => {
     if (!accountId) {
@@ -36,16 +38,38 @@ export function useAccountSymbols(accountId: string | null | undefined): UseAcco
 
     setLoading(true);
     setError(null);
+    // Reintentos con backoff: este fetch corre UNA vez por cuenta y sin él no
+    // hay símbolos → el chart nunca se crea y "Cargando velas" se queda pegado
+    // hasta refrescar. Un blip transitorio (la carrera del 401 al hidratar el
+    // token en el primer load, red, backend reiniciando) no debe dejar el
+    // terminal muerto. El guard de generación evita que un retry tardío de una
+    // cuenta anterior pise los símbolos de la cuenta actual.
+    const generation = ++fetchGenerationRef.current;
+    const isStale = () => fetchGenerationRef.current !== generation;
+    const RETRIES = 3;
     try {
-      // The API endpoint in the controller is GET /mt5-accounts/:accountId/symbols
-      const data = await nestAuthFetch<AccountSymbol[]>(`/api/mt5-accounts/${accountId}/symbols`);
-      setSymbols(data || []);
-      setLoadedForAccountId(accountId);
-    } catch (err) {
-      console.error('Failed to fetch account symbols', err);
-      setError(err instanceof Error ? err : new Error('Failed to fetch account symbols'));
+      let lastErr: unknown = null;
+      for (let attempt = 0; attempt <= RETRIES; attempt++) {
+        if (attempt > 0) {
+          await new Promise((r) => setTimeout(r, 1000 * 2 ** (attempt - 1)));
+        }
+        if (isStale()) return;
+        try {
+          // The API endpoint in the controller is GET /mt5-accounts/:accountId/symbols
+          const data = await nestAuthFetch<AccountSymbol[]>(`/api/mt5-accounts/${accountId}/symbols`);
+          if (isStale()) return;
+          setSymbols(data || []);
+          setLoadedForAccountId(accountId);
+          return;
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+      if (isStale()) return;
+      console.error('Failed to fetch account symbols', lastErr);
+      setError(lastErr instanceof Error ? lastErr : new Error('Failed to fetch account symbols'));
     } finally {
-      setLoading(false);
+      if (!isStale()) setLoading(false);
     }
   }, [accountId]);
 

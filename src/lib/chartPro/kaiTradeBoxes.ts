@@ -30,6 +30,13 @@ export const KAI_TRADES_GROUP = 'kai_trades';
  */
 const OPEN_BOX_FALLBACK_MS = 2 * 60 * 60 * 1000;
 
+/**
+ * Ancho mínimo de la caja de un trade CERRADO cuando openedAt no es anterior a
+ * closedAt (trades MT5 sincronizados antes del fix del deal IN: ambas horas
+ * eran la del cierre → caja de ancho 0 = "no sale el LONG/SHORT").
+ */
+const CLOSED_BOX_MIN_WIDTH_MS = 15 * 60 * 1000;
+
 export interface KaiTradeBox {
   id: string;
   overlay: OverlayCreate;
@@ -177,14 +184,19 @@ export function buildKaiTradeBoxes(args: BuildArgs): KaiTradeBox[] {
     const t0 = t.openedAt ? Date.parse(t.openedAt) : NaN;
     if (!Number.isFinite(t0)) continue;
     const t1raw = t.closedAt ? Date.parse(t.closedAt) : now;
+    const t1 = Number.isFinite(t1raw) ? t1raw : now;
+    // Trades MT5 sincronizados ANTES del fix de openTime traen openedAt ==
+    // closedAt (hora del deal OUT) → caja de ancho 0, invisible. Ancho mínimo
+    // hacia atrás para que el LONG/SHORT siempre se vea.
+    const t0safe = t0 < t1 ? t0 : t1 - CLOSED_BOX_MIN_WIDTH_MS;
     const box = boxFor({
       id: `kaihist-${t.id}`,
       side: t.side === 'buy' ? 'long' : 'short',
       entry: t.entryPrice,
       stop: t.stopLoss,
       target: t.takeProfit,
-      t0,
-      t1: Number.isFinite(t1raw) ? t1raw : now,
+      t0: t0safe,
+      t1,
       showTpSl,
       showLabels: false, // trade CERRADO → caja sin etiquetas
     });
