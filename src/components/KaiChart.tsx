@@ -30,8 +30,10 @@ type StopEditKind = 'tp' | 'sl';
 
 const CANDLE_PANE_ID = 'candle_pane';
 // Initial candle window requested from MT5. Lazy-load extends this when the
-// user scrolls back in time (see setLoadDataCallback in KaiChart).
-const INITIAL_CANDLE_COUNT = 20000;
+// user scrolls back in time (see setLoadDataCallback in KaiChart). 2500 velas
+// ≈ 15-25 pantallas: la primera pintada baja ~10x menos payload que las 20000
+// de antes; el scroll hacia atrás sigue trayendo más vía loadMore.
+const INITIAL_CANDLE_COUNT = 2500;
 
 // Module-level empty fallbacks so "no data yet" keeps a stable identity across
 // renders (see the comment where `candles` is derived below).

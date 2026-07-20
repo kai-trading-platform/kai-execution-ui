@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { nestAuthFetch } from "@/api/client";
 
 export interface MarketCandle {
@@ -144,21 +144,87 @@ export async function fetchCandles(
   return out;
 }
 
+// Velas de la "cola" que se piden en cada refresco incremental. Cubre gaps de
+// hasta ~TAIL_COUNT velas (30 min en M1, 2.5 h en M5); gaps mayores (pestaña
+// dormida mucho tiempo) disparan un refetch completo del histórico.
+const TAIL_COUNT = 30;
+
+/**
+ * Merge de la cola reciente sobre el histórico cacheado: reemplaza cualquier
+ * vela cuyo time esté cubierto por la cola y agrega las nuevas al final.
+ * Devuelve null si hay un hueco entre el histórico y la cola (señal de que
+ * hace falta un refetch completo).
+ */
+function mergeTailCandles(
+  prev: MarketCandle[],
+  tail: MarketCandle[]
+): MarketCandle[] | null {
+  if (tail.length === 0) return prev;
+  if (prev.length === 0) return tail;
+  const prevLast = prev[prev.length - 1].time;
+  const tailFirst = tail[0].time;
+  if (tailFirst > prevLast) {
+    // La cola empieza DESPUÉS de la última vela del histórico: si el salto es
+    // mayor que un bucket (inferido de la propia cola), hay velas perdidas.
+    const spacing = tail.length >= 2 ? tail[1].time - tail[0].time : 0;
+    if (spacing > 0 && tailFirst - prevLast > spacing) return null;
+  }
+  const kept = prev.filter((c) => c.time < tailFirst);
+  return [...kept, ...tail];
+}
+
 export function useMarketCandles(
   accountId: string | null | undefined,
   symbol: string | null | undefined,
   timeframe: string,
   limit: number = 300
 ) {
-  return useQuery({
-    queryKey: ["market-candles", accountId, symbol, timeframe, limit],
+  const queryClient = useQueryClient();
+  const queryKey = ["market-candles", accountId, symbol, timeframe, limit];
+
+  // Histórico: se baja UNA vez por (cuenta, símbolo, TF, limit). Antes se
+  // re-bajaba COMPLETO cada 30s (megabytes por chart abierto); ahora el
+  // refresco lo hace la query de cola de abajo con TAIL_COUNT velas.
+  const main = useQuery({
+    queryKey,
     queryFn: () => {
       if (!accountId || !symbol) throw new Error("Missing accountId or symbol");
       return fetchCandles(accountId, symbol, timeframe, limit);
     },
     enabled: Boolean(accountId && symbol),
-    staleTime: 10_000,
-    refetchInterval: 30_000,
+    staleTime: Infinity,
     retry: false,
   });
+
+  // Cola incremental: últimas TAIL_COUNT velas cada 30s, mergeadas sobre el
+  // histórico cacheado (misma forma de datos → el consumidor no cambia). Un
+  // hueco no cubrible invalida el histórico para re-bajarlo completo.
+  useQuery({
+    queryKey: [...queryKey, "tail"],
+    queryFn: async () => {
+      if (!accountId || !symbol) throw new Error("Missing accountId or symbol");
+      const tail = await fetchCandles(
+        accountId,
+        symbol,
+        timeframe,
+        Math.min(TAIL_COUNT, limit)
+      );
+      const prev = queryClient.getQueryData<MarketCandle[]>(queryKey);
+      if (prev !== undefined) {
+        const merged = mergeTailCandles(prev, tail);
+        if (merged === null) {
+          await queryClient.invalidateQueries({ queryKey, exact: true });
+        } else if (merged !== prev) {
+          queryClient.setQueryData(queryKey, merged);
+        }
+      }
+      return tail;
+    },
+    enabled: Boolean(accountId && symbol) && main.isSuccess,
+    refetchInterval: 30_000,
+    staleTime: 0,
+    retry: false,
+  });
+
+  return main;
 }
