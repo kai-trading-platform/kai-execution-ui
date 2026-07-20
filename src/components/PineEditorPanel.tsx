@@ -295,42 +295,85 @@ export function PineEditorPanel() {
 
   return (
     <div className="flex-1 flex min-h-0 text-xs">
-      {/* Lista de scripts */}
-      <div className="w-44 shrink-0 border-r border-white/10 flex flex-col">
-        <div className="px-2 py-1.5 flex items-center justify-between border-b border-white/10">
-          <span className="text-[10px] uppercase tracking-wide text-white/40">Mis scripts</span>
-          <div className="relative" onClick={(e) => e.stopPropagation()}>
-            <button
-              type="button"
-              onClick={() => setTemplatesOpen((v) => !v)}
-              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-white/70 border border-white/15 hover:bg-white/5"
-              title="Nuevo script"
-            >
-              <Plus className="h-3 w-3" /> Nuevo
-            </button>
-            {templatesOpen && (
-              <div className="absolute right-0 top-6 z-30 w-52 rounded-md border border-white/10 bg-[#151824] py-1 shadow-xl">
+      {/* Modal "Nuevo script" — centrado en pantalla (no se recorta en el panel). */}
+      {templatesOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60"
+          onClick={() => setTemplatesOpen(false)}
+        >
+          <div
+            className="w-[420px] max-w-[92vw] rounded-lg border border-white/10 bg-[#151824] shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+              <span className="text-sm font-semibold text-white">Nuevo script</span>
+              <button
+                type="button"
+                onClick={() => setTemplatesOpen(false)}
+                className="text-white/40 hover:text-white/80"
+                aria-label="Cerrar"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-3">
+              <div className="px-1 pb-1 text-[10px] uppercase tracking-wide text-white/35">Crear</div>
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   type="button"
-                  className="w-full px-3 py-1.5 text-left text-white/80 hover:bg-white/5"
-                  onClick={() => createFrom("Mi script", blankTemplate(user?.username || "kai"))}
+                  onClick={createIndicatorScript}
+                  className="flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2.5 text-left text-white/85 hover:bg-white/10"
                 >
-                  Script en blanco
+                  <LineChart className="h-4 w-4 text-[#7ea6ff]" />
+                  <div>
+                    <div className="font-semibold">Indicador</div>
+                    <div className="text-[10px] text-white/40">Se dibuja sobre el chart</div>
+                  </div>
                 </button>
-                <div className="px-3 pt-1.5 pb-0.5 text-[9px] uppercase tracking-wide text-white/30">Plantillas</div>
+                <button
+                  type="button"
+                  onClick={createStrategyScript}
+                  className="flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-2.5 text-left text-white/85 hover:bg-white/10"
+                >
+                  <Waypoints className="h-4 w-4 text-emerald-400" />
+                  <div>
+                    <div className="font-semibold">Estrategia</div>
+                    <div className="text-[10px] text-white/40">Con órdenes y Probador</div>
+                  </div>
+                </button>
+              </div>
+              <div className="px-1 pt-3 pb-1 text-[10px] uppercase tracking-wide text-white/35">Plantillas</div>
+              <div className="grid grid-cols-2 gap-1.5">
                 {PINE_EXAMPLES.map((ex) => (
                   <button
                     key={ex.name}
                     type="button"
-                    className="w-full px-3 py-1.5 text-left text-white/70 hover:bg-white/5"
                     onClick={() => createFrom(ex.name, ex.source)}
+                    className="rounded-md border border-white/10 px-3 py-2 text-left text-white/70 hover:bg-white/5"
                   >
                     {ex.name}
                   </button>
                 ))}
               </div>
-            )}
+            </div>
           </div>
+        </div>
+      )}
+      {/* Lista de scripts */}
+      <div className="w-44 shrink-0 border-r border-white/10 flex flex-col">
+        <div className="px-2 py-1.5 flex items-center justify-between border-b border-white/10">
+          <span className="text-[10px] uppercase tracking-wide text-white/40">Mis scripts</span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setTemplatesOpen(true);
+            }}
+            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] text-white/70 border border-white/15 hover:bg-white/5"
+            title="Nuevo script"
+          >
+            <Plus className="h-3 w-3" /> Nuevo
+          </button>
         </div>
         <div className="flex-1 overflow-y-auto">
           {scripts.length === 0 && (
