@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Play, Plus, Save, Trash2, X } from "lucide-react";
+import { ChevronDown, Copy, LineChart, Pencil, Play, Plus, Save, Trash2, Waypoints, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useAuth } from "@/contexts/AuthContext";
 import { compilePine } from "@/lib/pine/compilePine";
 import { PINE_EXAMPLES } from "@/lib/pine/examples";
 import { applyPineScript, isPineApplied, removePineScript } from "@/lib/pine/pineChart";
@@ -14,13 +15,45 @@ import { loadScripts, newScriptId, saveScripts, type PineScript } from "@/lib/pi
 
 type ConsoleMsg = { tone: "ok" | "error" | "info"; text: string } | null;
 
+// Cabecera estilo TradingView para un script en blanco (© del usuario logueado).
+function blankTemplate(username: string): string {
+  return `// Este código Kai Pine corre en tu terminal — sintaxis Pine v5 (subset).
+// © ${username}
+
+//@version=6
+indicator("Mi script")
+plot(close)
+`;
+}
+
+// Plantilla de ESTRATEGIA (fase 1: señales 1/-1 en panel propio; las órdenes
+// simuladas de strategy.entry/exit llegan en fase 2).
+function strategyTemplate(username: string): string {
+  return `// Este código Kai Pine corre en tu terminal — sintaxis Pine v5 (subset).
+// © ${username}
+
+//@version=6
+indicator("Mi estrategia", overlay=false)
+fast = ta.ema(close, 9)
+slow = ta.ema(close, 21)
+senal = ta.crossover(fast, slow) ? 1 : ta.crossunder(fast, slow) ? -1 : 0
+plot(senal, color=color.aqua, title="Señal (1=compra, -1=venta)")
+hline(0, color=color.gray)
+`;
+}
+
 export function PineEditorPanel() {
+  const { user } = useAuth();
   const [scripts, setScripts] = useState<PineScript[]>(() => loadScripts());
   const [activeId, setActiveId] = useState<string | null>(() => loadScripts()[0]?.id ?? null);
   const [source, setSource] = useState<string>(() => loadScripts()[0]?.source ?? "");
   const [dirty, setDirty] = useState(false);
   const [consoleMsg, setConsoleMsg] = useState<ConsoleMsg>(null);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  // Menú del nombre del script (estilo TradingView) + renombrado inline.
+  const [scriptMenuOpen, setScriptMenuOpen] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
   // Tick para re-leer isPineApplied tras aplicar/quitar.
   const [, setAppliedTick] = useState(0);
 
@@ -29,6 +62,16 @@ export function PineEditorPanel() {
 
   const active = useMemo(() => scripts.find((s) => s.id === activeId) ?? null, [scripts, activeId]);
   const applied = active ? isPineApplied(active.id) : false;
+
+  // Sin scripts: el editor arranca con la plantilla base (estilo TradingView)
+  // listo para escribir; al Guardar/Añadir se convierte en script.
+  useEffect(() => {
+    if (!active && !source) {
+      setSource(blankTemplate(user?.username || "kai"));
+    }
+    // Solo al montar: no re-inyectar si el usuario borra todo a propósito.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const persist = useCallback((next: PineScript[]) => {
     setScripts(next);
@@ -55,26 +98,36 @@ export function PineEditorPanel() {
       setActiveId(script.id);
       setSource(src);
       setDirty(false);
-      setConsoleMsg({ tone: "info", text: `Nuevo script '${name}' — edítalo y dale a Guardar / Añadir al chart` });
+      setConsoleMsg(null);
       setTemplatesOpen(false);
     },
     [scripts, persist],
   );
 
   const handleSave = useCallback((): PineScript | null => {
-    if (!active) return null;
-    // El nombre visible sale del título de indicator() si compila; si no, se queda.
+    if (!source.trim()) return null;
     const res = compilePine(source);
-    const name = res.ok ? res.compiled.title : active.name;
-    const updated: PineScript = { ...active, name, source, updatedAt: Date.now() };
-    persist(scripts.map((s) => (s.id === active.id ? updated : s)));
+    let saved: PineScript;
+    if (active) {
+      // El nombre del script es del USUARIO (renombrable desde el menú): no se
+      // pisa con el título de indicator() al guardar.
+      saved = { ...active, source, updatedAt: Date.now() };
+      persist(scripts.map((s) => (s.id === active.id ? saved : s)));
+    } else {
+      // Sin script activo: lo que se escribió directo en el editor se convierte
+      // en un script nuevo al Guardar / Añadir al chart (nombre = título).
+      const name = res.ok ? res.compiled.title : "Mi script";
+      saved = { id: newScriptId(), name, source, updatedAt: Date.now() };
+      persist([saved, ...scripts]);
+      setActiveId(saved.id);
+    }
     setDirty(false);
     if (!res.ok) {
       setConsoleMsg({ tone: "error", text: `Guardado con errores — línea ${res.error.line}: ${res.error.message}` });
     } else {
       setConsoleMsg({ tone: "ok", text: "Guardado" });
     }
-    return updated;
+    return saved;
   }, [active, source, scripts, persist]);
 
   const handleApply = useCallback(() => {
@@ -115,6 +168,48 @@ export function PineEditorPanel() {
     setConsoleMsg({ tone: "info", text: `Script '${active.name}' eliminado` });
   }, [active, scripts, persist]);
 
+  // ── Acciones del menú del nombre (estilo TradingView) ──────────────────────
+
+  const handleDuplicate = useCallback(() => {
+    if (!active) return;
+    const copy: PineScript = {
+      id: newScriptId(),
+      name: `${active.name} (copia)`,
+      source,
+      updatedAt: Date.now(),
+    };
+    persist([copy, ...scripts]);
+    setActiveId(copy.id);
+    setDirty(false);
+    setConsoleMsg({ tone: "info", text: `Copia creada: '${copy.name}'` });
+    setScriptMenuOpen(false);
+  }, [active, source, scripts, persist]);
+
+  const startRename = useCallback(() => {
+    if (!active) return;
+    setRenameValue(active.name);
+    setRenaming(true);
+    setScriptMenuOpen(false);
+  }, [active]);
+
+  const commitRename = useCallback(() => {
+    setRenaming(false);
+    if (!active) return;
+    const name = renameValue.trim();
+    if (!name || name === active.name) return;
+    persist(scripts.map((s) => (s.id === active.id ? { ...s, name, updatedAt: Date.now() } : s)));
+  }, [active, renameValue, scripts, persist]);
+
+  const createIndicatorScript = useCallback(() => {
+    createFrom("Mi script", blankTemplate(user?.username || "kai"));
+    setScriptMenuOpen(false);
+  }, [createFrom, user]);
+
+  const createStrategyScript = useCallback(() => {
+    createFrom("Mi estrategia", strategyTemplate(user?.username || "kai"));
+    setScriptMenuOpen(false);
+  }, [createFrom, user]);
+
   // Gutter de números de línea sincronizado con el scroll del textarea.
   const lineCount = useMemo(() => source.split("\n").length, [source]);
   const onScroll = useCallback(() => {
@@ -145,13 +240,16 @@ export function PineEditorPanel() {
     [handleSave],
   );
 
-  // Cerrar el menú de plantillas al hacer clic fuera.
+  // Cerrar menús (plantillas / nombre) al hacer clic fuera.
   useEffect(() => {
-    if (!templatesOpen) return;
-    const close = () => setTemplatesOpen(false);
+    if (!templatesOpen && !scriptMenuOpen) return;
+    const close = () => {
+      setTemplatesOpen(false);
+      setScriptMenuOpen(false);
+    };
     window.addEventListener("click", close);
     return () => window.removeEventListener("click", close);
-  }, [templatesOpen]);
+  }, [templatesOpen, scriptMenuOpen]);
 
   return (
     <div className="flex-1 flex min-h-0 text-xs">
@@ -173,7 +271,7 @@ export function PineEditorPanel() {
                 <button
                   type="button"
                   className="w-full px-3 py-1.5 text-left text-white/80 hover:bg-white/5"
-                  onClick={() => createFrom("Mi indicador", 'indicator("Mi indicador", overlay=true)\nplot(close, color=color.blue)\n')}
+                  onClick={() => createFrom("Mi script", blankTemplate(user?.username || "kai"))}
                 >
                   Script en blanco
                 </button>
@@ -221,12 +319,105 @@ export function PineEditorPanel() {
       {/* Editor + consola */}
       <div className="flex-1 flex flex-col min-w-0">
         <div className="px-2 py-1.5 border-b border-white/10 flex items-center gap-1.5">
-          <span className="text-white/80 font-semibold truncate">{active ? active.name : "Kai Pine"}</span>
-          <span className="text-[9px] text-white/30 mr-auto">sintaxis Pine v5 (subset) · ta.* math.* color.*</span>
+          {/* Nombre del script = menú (Guardar / Copia / Renombrar / Crear nuevo), como TradingView. */}
+          <div className="relative mr-auto min-w-0" onClick={(e) => e.stopPropagation()}>
+            {renaming ? (
+              <input
+                autoFocus
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitRename();
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+                className="bg-[#10131c] border border-[#2f6bff]/60 rounded px-2 py-0.5 text-white outline-none w-48"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setScriptMenuOpen((v) => !v)}
+                className="flex items-center gap-1 rounded px-2 py-1 text-white/85 font-semibold hover:bg-white/5 max-w-[260px]"
+              >
+                <span className="truncate">{active ? active.name : "Script sin título"}</span>
+                <ChevronDown className="h-3 w-3 shrink-0 text-white/40" />
+              </button>
+            )}
+            {scriptMenuOpen && (
+              <div className="absolute left-0 top-7 z-30 w-56 rounded-md border border-white/10 bg-[#151824] py-1 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleSave();
+                    setScriptMenuOpen(false);
+                  }}
+                  disabled={!source.trim()}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 hover:bg-white/5 disabled:opacity-30"
+                >
+                  <Save className="h-3.5 w-3.5 text-white/40" /> Guardar script
+                  <span className="ml-auto text-[9px] text-white/30">Ctrl+S</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDuplicate}
+                  disabled={!active}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 hover:bg-white/5 disabled:opacity-30"
+                >
+                  <Copy className="h-3.5 w-3.5 text-white/40" /> Hacer una copia
+                </button>
+                <button
+                  type="button"
+                  onClick={startRename}
+                  disabled={!active}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 hover:bg-white/5 disabled:opacity-30"
+                >
+                  <Pencil className="h-3.5 w-3.5 text-white/40" /> Renombrar…
+                </button>
+                <div className="my-1 border-t border-white/10" />
+                <div className="px-3 pt-1 pb-0.5 text-[9px] uppercase tracking-wide text-white/30">Crear nuevo</div>
+                <button
+                  type="button"
+                  onClick={createIndicatorScript}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 hover:bg-white/5"
+                >
+                  <LineChart className="h-3.5 w-3.5 text-white/40" /> Indicador
+                </button>
+                <button
+                  type="button"
+                  onClick={createStrategyScript}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 hover:bg-white/5"
+                >
+                  <Waypoints className="h-3.5 w-3.5 text-white/40" /> Estrategia
+                </button>
+                {scripts.length > 0 && (
+                  <>
+                    <div className="my-1 border-t border-white/10" />
+                    <div className="px-3 pt-1 pb-0.5 text-[9px] uppercase tracking-wide text-white/30">Abrir script</div>
+                    {scripts.slice(0, 6).map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => {
+                          openScript(s.id);
+                          setScriptMenuOpen(false);
+                        }}
+                        className={cn(
+                          "flex w-full items-center px-3 py-1.5 text-left hover:bg-white/5 truncate",
+                          s.id === activeId ? "text-white" : "text-white/60",
+                        )}
+                      >
+                        {s.name}
+                      </button>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
           <button
             type="button"
             onClick={handleSave}
-            disabled={!active}
+            disabled={!source.trim()}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-white/15 text-white/70 hover:bg-white/5 disabled:opacity-30"
             title="Guardar (Ctrl+S)"
           >
@@ -235,7 +426,7 @@ export function PineEditorPanel() {
           <button
             type="button"
             onClick={handleApply}
-            disabled={!active}
+            disabled={!source.trim()}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-30"
           >
             <Play className="h-3 w-3" /> {applied ? "Actualizar en chart" : "Añadir al chart"}
@@ -278,9 +469,8 @@ export function PineEditorPanel() {
               setSource(e.target.value);
               setDirty(true);
             }}
-            placeholder={active ? "" : "Crea un script con el botón Nuevo →"}
-            disabled={!active}
-            className="flex-1 resize-none bg-transparent outline-none pt-2 px-2 font-mono text-[11px] leading-[18px] text-white/85 placeholder:text-white/25 disabled:opacity-40"
+            placeholder={'// Escribe tu indicador aquí, ej.:\n// fast = ta.ema(close, 9)\n// plot(fast, color=color.green)'}
+            className="flex-1 resize-none bg-transparent outline-none pt-2 px-2 font-mono text-[11px] leading-[18px] text-white/85 placeholder:text-white/25"
           />
         </div>
 

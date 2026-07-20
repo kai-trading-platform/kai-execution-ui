@@ -1241,7 +1241,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
           <div className={cn("border-t border-white/10 bg-[#0d0f16] flex flex-col", bottomOpen ? "h-64" : "h-9")}>
             <div className="flex items-center justify-between border-b border-white/10 px-2 sm:px-3 py-1.5">
               <div className="flex gap-2 sm:gap-4 text-xs overflow-x-auto">
-                {(["CUENTAS", "POSICIONES", "ORDENES", "PINE"] as const).map((t) => (
+                {(["CUENTAS", "POSICIONES", "ORDENES"] as const).map((t) => (
                   <button
                     key={t}
                     onClick={() => {
@@ -1257,13 +1257,24 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
                       ? `CUENTAS (${routeAccounts.length})`
                       : t === "POSICIONES"
                         ? `POSICIONES (${positions.length})`
-                        : t === "ORDENES"
-                          ? `ÓRDENES (${orders.length + historyTrades.length})`
-                          : "PINE"}
+                        : `ÓRDENES (${orders.length + historyTrades.length})`}
                   </button>
                 ))}
               </div>
               <div className="flex items-center gap-2">
+                {/* PINE vive a la DERECHA, pegado a la flecha de ocultar (pedido del usuario). */}
+                <button
+                  onClick={() => {
+                    setBottomTab("PINE");
+                    setBottomOpen(true);
+                  }}
+                  className={cn(
+                    "text-xs font-semibold tracking-wider pb-1 transition-colors whitespace-nowrap",
+                    bottomTab === "PINE" && bottomOpen ? "text-white border-b-2 border-[#2f6bff]" : "text-white/50 hover:text-white/80",
+                  )}
+                >
+                  PINE
+                </button>
                 {bottomTab === "POSICIONES" && positions.length > 0 && bottomOpen && (
                   <Button
                     variant="outline"
