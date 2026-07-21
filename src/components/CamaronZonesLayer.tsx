@@ -21,9 +21,12 @@ interface Zone {
 }
 
 function telemetryRoot(symbol: string): string {
-  return symbol
+  // MISMA regla que telemetrySymbolRoot del backend: fuera sufijo de escala
+  // (_x100m) y sufijo de bróker en minúscula (USTECm→USTEC, BTCUSDm→BTCUSD).
+  let s = symbol.trim().replace(/_x\d+m?$/i, "");
+  if (/[a-z]$/.test(s) && s.length > 3) s = s.slice(0, -1);
+  return s
     .toUpperCase()
-    .replace(/_X\d+M?$/i, "")
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, 12);
 }
