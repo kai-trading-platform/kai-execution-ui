@@ -205,8 +205,6 @@ export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
   // el mini-HUD amigable cuando SÍ hay telemetría del Camarón para el símbolo.
   if (!on || !cam) return null;
 
-  const entered = cam.signal === "BUY" || cam.signal === "SELL";
-
   if (minimized) {
     return (
       <button
@@ -224,9 +222,6 @@ export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
       <button onClick={toggleMin} className="w-full flex items-center gap-1.5 px-2.5 pt-2 text-left" title="Minimizar">
         <span className="text-[12px]">🦐</span>
         <span className="text-[10px] font-semibold tracking-wide text-white/70">CAMARÓN</span>
-        <span
-          className={`ml-auto h-1.5 w-1.5 rounded-full ${entered ? "bg-emerald-400 animate-pulse" : "bg-amber-300/80"}`}
-        />
       </button>
       <div className="px-2.5 pt-1 text-[10.5px] leading-snug text-white/80">{friendlyStatus(cam)}</div>
       <div className="px-2.5 pb-2 pt-1.5 space-y-0.5">
