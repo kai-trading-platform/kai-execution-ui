@@ -127,9 +127,19 @@ async function withAuthRetry<T>(runner: (accessToken: string) => Promise<T>): Pr
   }
 }
 
+// Cooldown tras un refresh FALLIDO: sin esto, un token muerto hacía que cada
+// poll del terminal (posiciones cada 2s, velas…) disparara otro intento de
+// refresh y se comiera el RATE-LIMIT del backend (429 por ~7 min) — con el
+// límite quemado ni la cookie SSO de Kai podía rescatar la sesión.
+let refreshFailedAt = 0;
+const REFRESH_FAIL_COOLDOWN_MS = 30_000;
+
 async function refreshSession() {
   if (refreshInFlight) {
     return refreshInFlight;
+  }
+  if (Date.now() - refreshFailedAt < REFRESH_FAIL_COOLDOWN_MS) {
+    return null;
   }
 
   refreshInFlight = (async () => {
@@ -143,7 +153,7 @@ async function refreshSession() {
     // we bailed out here WITHOUT clearing the stored session, leaving the app
     // in a zombie half-authenticated state (expired access token + endless
     // 401s + a terminal stuck on "Cargando...").
-    const res = await fetch(getApiUrl("/api/auth/refresh"), {
+    let res = await fetch(getApiUrl("/api/auth/refresh"), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -152,7 +162,25 @@ async function refreshSession() {
       ),
     });
 
+    // El refresh token LOCAL puede estar vencido/revocado, pero la cookie SSO
+    // de Kai (dominio .scyra.dev, httpOnly) puede seguir viva: reintento
+    // solo-cookie para que el terminal HEREDE la sesión de Kai en vez de
+    // botar al usuario al login teniendo Kai abierto.
+    if (!res.ok && activeState.refreshToken) {
+      try {
+        res = await fetch(getApiUrl("/api/auth/refresh"), {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+      } catch {
+        /* cae al manejo de !res.ok de abajo */
+      }
+    }
+
     if (!res.ok) {
+      refreshFailedAt = Date.now();
       // Prevent stale concurrent refresh failures from wiping a newer session.
       const latest = readStoredAuth();
       if (latest?.refreshToken === activeState.refreshToken) {
@@ -160,6 +188,7 @@ async function refreshSession() {
       }
       return null;
     }
+    refreshFailedAt = 0;
 
     const payload = await res.json();
     const nextAccessToken = String(payload?.accessToken || "");

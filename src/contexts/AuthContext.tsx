@@ -90,6 +90,31 @@ export function writeStoredAuth(state: StoredAuthState | null) {
   }
 }
 
+/**
+ * Intenta HEREDAR la sesión de Kai vía la cookie SSO httpOnly (.scyra.dev):
+ * un refresh solo-cookie. Devuelve true si obtuvo sesión (y la persistió —
+ * writeStoredAuth dispara AUTH_STORAGE_EVENT y el provider se sincroniza).
+ * La usa la pantalla de login para auto-recuperar cuando Kai está logueado.
+ */
+export async function bootstrapFromCookie(): Promise<boolean> {
+  try {
+    const res = await fetch(getApiUrl("/api/auth/refresh"), {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) return false;
+    const payload = await res.json();
+    const next = normalizePayload(payload);
+    if (!next.accessToken) return false;
+    writeStoredAuth(next);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function normalizePayload(payload: unknown): StoredAuthState {
   const root = asRecord(payload);
   const user = asRecord(root.user);

@@ -1,5 +1,5 @@
-import { useState, type FormEvent } from "react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useEffect, useState, type FormEvent } from "react";
+import { bootstrapFromCookie, useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,12 +19,25 @@ import { Loader2 } from "lucide-react";
  * exists, so the terminal is usable on its own instead of silently 401-ing.
  */
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, syncFromStorage } = useAuth();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [rememberMe, setRememberMe] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Antes de pedir credenciales, intenta HEREDAR la sesión de Kai vía la
+  // cookie SSO (.scyra.dev): si Kai está logueado, el terminal entra solo y
+  // este formulario ni se usa (el guard re-renderiza el terminal al instante).
+  useEffect(() => {
+    let alive = true;
+    void bootstrapFromCookie().then((ok) => {
+      if (ok && alive) syncFromStorage();
+    });
+    return () => {
+      alive = false;
+    };
+  }, [syncFromStorage]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
