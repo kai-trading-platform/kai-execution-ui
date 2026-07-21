@@ -12,6 +12,14 @@ import { MarketSocketProvider } from "@/contexts/MarketSocketContext";
 import TradingTerminalPage from "@/pages/TradingTerminal";
 import LoginPage from "@/pages/Login";
 import { Routes as routePaths } from "@/config/routes";
+import { useInactivityLogout } from "@/hooks/useInactivityLogout";
+
+// Cierre por inactividad (mismo tiempo configurado que Kai). Componente vacío
+// para poder usar el hook DENTRO del AuthProvider.
+function InactivityLogout() {
+  useInactivityLogout();
+  return null;
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -63,6 +71,7 @@ const App = () => (
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
             <ConfirmDialogProvider>
+            <InactivityLogout />
             <Sonner />
             <BrowserRouter
               future={{

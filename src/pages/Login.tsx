@@ -6,7 +6,6 @@ import { Label } from "@/components/ui/label";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -53,9 +52,6 @@ export default function LoginPage() {
             <img src="/apple-touch-icon.png" alt="Kai" className="h-9 w-9 rounded-lg" />
           </div>
           <CardTitle className="text-xl">Iniciar sesión</CardTitle>
-          <CardDescription>
-            Accede con tu cuenta para operar desde el terminal.
-          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
