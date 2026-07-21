@@ -432,11 +432,6 @@ export function PineEditorPanel() {
               <div className="truncate font-medium">{s.name}</div>
             </button>
           ))}
-          {scripts.length === 0 && (
-            <div className="px-3 py-4 text-white/40 text-[11px] leading-relaxed">
-              Sin scripts todavía. Crea uno con <span className="text-white/70">Nuevo</span> — hay plantillas para arrancar.
-            </div>
-          )}
           {scripts.map((s) => (
             <button
               key={s.id}
