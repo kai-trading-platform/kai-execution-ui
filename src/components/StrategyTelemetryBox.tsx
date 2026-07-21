@@ -18,7 +18,7 @@ interface TelemetryResult {
   confidence: number;
   reason: string;
   setup: { entry: number | null; stopLoss: number | null; takeProfit: number | null } | null;
-  zones?: Array<{ high: number | null; low: number | null; type: "supply" | "demand" }>;
+  zones?: Array<{ high: number | null; low: number | null; type: "supply" | "demand"; time?: number | null }>;
 }
 
 interface TelemetrySnapshot {
@@ -94,10 +94,14 @@ export function StrategyTelemetryBox({ symbol, onClose }: { symbol: string | nul
     const data = chart.getDataList?.() ?? [];
     if (data.length < 2) return;
     const tEnd = data[data.length - 1].timestamp;
-    const tStart = data[Math.max(0, data.length - 90)].timestamp;
+    const fallbackStart = data[Math.max(0, data.length - 90)].timestamp;
+    const firstLoaded = data[0].timestamp;
     zones.forEach((z, idx) => {
       if (z.high == null || z.low == null) return;
       const supply = z.type === "supply";
+      // La caja NACE donde se formó la zona (feedback: sin origen "flotaban");
+      // si el origen quedó fuera del histórico cargado, se ancla al inicio.
+      const origin = z.time != null && Number.isFinite(z.time) ? Math.max(firstLoaded, Math.min(z.time, tEnd)) : fallbackStart;
       const id = `kai-zone-${idx}`;
       try {
         chart.createOverlay({
@@ -106,7 +110,7 @@ export function StrategyTelemetryBox({ symbol, onClose }: { symbol: string | nul
           groupId: ZONES_GROUP,
           lock: true,
           points: [
-            { timestamp: tStart, value: z.high },
+            { timestamp: origin, value: z.high },
             { timestamp: tEnd, value: z.low },
           ],
           // El overlay 'rect' builtin lee styles.rect y su figura interna es un

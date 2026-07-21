@@ -16,6 +16,8 @@ interface Zone {
   high: number | null;
   low: number | null;
   type: "supply" | "demand";
+  /** Origen de la zona (ms) — la caja nace aquí, como TradingView. */
+  time?: number | null;
 }
 
 function telemetryRoot(symbol: string): string {
@@ -78,10 +80,14 @@ export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
     const data = chart.getDataList?.() ?? [];
     if (data.length < 2) return;
     const tEnd = data[data.length - 1].timestamp;
-    const tStart = data[Math.max(0, data.length - 90)].timestamp;
+    const fallbackStart = data[Math.max(0, data.length - 90)].timestamp;
+    const firstLoaded = data[0].timestamp;
     zones.forEach((z, idx) => {
       if (z.high == null || z.low == null) return;
       const supply = z.type === "supply";
+      // La caja NACE donde se formó la zona (feedback: sin origen "flotaban");
+      // si el origen quedó fuera del histórico cargado, se ancla al inicio.
+      const origin = z.time != null && Number.isFinite(z.time) ? Math.max(firstLoaded, Math.min(z.time, tEnd)) : fallbackStart;
       const id = `kai-camzone-${idx}`;
       try {
         chart.createOverlay({
@@ -90,7 +96,7 @@ export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
           groupId: "kai_camaron_zones",
           lock: true,
           points: [
-            { timestamp: tStart, value: z.high },
+            { timestamp: origin, value: z.high },
             { timestamp: tEnd, value: z.low },
           ],
           styles: {
