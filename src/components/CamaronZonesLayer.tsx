@@ -31,6 +31,7 @@ function telemetryRoot(symbol: string): string {
 export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
   const [on, setOn] = useState<boolean>(() => isCamaronZonesOn());
   const [zones, setZones] = useState<Zone[]>([]);
+  const [unavailable, setUnavailable] = useState(false);
   const idsRef = useRef<string[]>([]);
 
   useEffect(() => onCamaronZonesChange(() => setOn(isCamaronZonesOn())), []);
@@ -52,8 +53,12 @@ export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
         if (!alive) return;
         const zs = res?.available ? (res.snapshot?.results.find((r) => Array.isArray(r.zones))?.zones ?? []) : [];
         setZones(zs);
+        setUnavailable(!res?.available);
       } catch {
-        if (alive) setZones([]);
+        if (alive) {
+          setZones([]);
+          setUnavailable(true);
+        }
       }
     };
     void tick();
@@ -133,5 +138,14 @@ export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
     };
   }, [on, zones]);
 
+  // Aviso cuando el script está aplicado pero el motor NO evalúa este símbolo
+  // (las zonas son REALES: solo existen donde el Camarón tiene jobs, hoy MNQ).
+  if (on && symbol && unavailable) {
+    return (
+      <div className="absolute top-12 left-2 z-20 rounded-md border border-amber-500/25 bg-[#0d0f16]/85 px-2.5 py-1.5 text-[10px] text-amber-400/90 backdrop-blur-sm max-w-[300px]">
+        CAMARÓN: el motor no está evaluando {telemetryRoot(symbol)} — cámbiate a un chart de MNQ para ver sus zonas en vivo.
+      </div>
+    );
+  }
   return null;
 }
