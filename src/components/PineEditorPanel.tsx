@@ -9,6 +9,7 @@ import { PINE_EXAMPLES } from "@/lib/pine/examples";
 import { applyPineScript, isPineApplied, removePineScript } from "@/lib/pine/pineChart";
 import { getActiveProChart } from "@/lib/chartPro/chartInstance";
 import { loadScripts, newScriptId, saveScripts, type PineScript } from "@/lib/pine/pineStore";
+import { SYSTEM_SCRIPTS, isCamaronZonesOn, setCamaronZonesOn, onCamaronZonesChange } from "@/lib/pine/systemScripts";
 
 // Editor Kai Pine (pestaña PINE del panel inferior): lista de scripts +
 // textarea con gutter de líneas + consola. Sin dependencias de editor: un
@@ -61,6 +62,11 @@ export function PineEditorPanel() {
   const [renameValue, setRenameValue] = useState("");
   // Probador de estrategias (backtest sobre las velas del chart actual).
   const [testerReport, setTesterReport] = useState<StrategyReport | null>(null);
+  // Script de SISTEMA activo (Camarón): solo lectura, fijo arriba de la lista.
+  const [activeSystemId, setActiveSystemId] = useState<string | null>(null);
+  const [camZonesOn, setCamZonesOn] = useState<boolean>(() => isCamaronZonesOn());
+  useEffect(() => onCamaronZonesChange(() => setCamZonesOn(isCamaronZonesOn())), []);
+  const activeSystem = activeSystemId ? SYSTEM_SCRIPTS.find((s) => s.id === activeSystemId) ?? null : null;
   // Tick para re-leer isPineApplied tras aplicar/quitar.
   const [, setAppliedTick] = useState(0);
 
@@ -68,7 +74,7 @@ export function PineEditorPanel() {
   const gutterRef = useRef<HTMLDivElement>(null);
 
   const active = useMemo(() => scripts.find((s) => s.id === activeId) ?? null, [scripts, activeId]);
-  const applied = active ? isPineApplied(active.id) : false;
+  const applied = activeSystemId ? camZonesOn : active ? isPineApplied(active.id) : false;
 
   // Sin scripts: el editor arranca con la plantilla base (estilo TradingView)
   // listo para escribir; al Guardar/Añadir se convierte en script.
@@ -89,6 +95,7 @@ export function PineEditorPanel() {
     (id: string) => {
       const s = scripts.find((x) => x.id === id);
       if (!s) return;
+      setActiveSystemId(null);
       setActiveId(id);
       setSource(s.source);
       setDirty(false);
@@ -96,6 +103,16 @@ export function PineEditorPanel() {
     },
     [scripts],
   );
+
+  const openSystemScript = useCallback((id: string) => {
+    const s = SYSTEM_SCRIPTS.find((x) => x.id === id);
+    if (!s) return;
+    setActiveSystemId(id);
+    setActiveId(null);
+    setSource(s.source);
+    setDirty(false);
+    setConsoleMsg(null);
+  }, []);
 
   const createFrom = useCallback(
     (name: string, src: string) => {
@@ -138,6 +155,13 @@ export function PineEditorPanel() {
   }, [active, source, scripts, persist]);
 
   const handleApply = useCallback(() => {
+    // Script de sistema (Camarón): no compila Pine — activa las zonas EN VIVO
+    // del motor sobre el chart (telemetría real).
+    if (activeSystem) {
+      setCamaronZonesOn(true);
+      setConsoleMsg({ tone: "ok", text: "Zonas del Camarón EN VIVO aplicadas al chart — se refrescan solas cada 15s" });
+      return;
+    }
     const script = handleSave();
     if (!script) return;
     const chart = getActiveProChart();
@@ -152,15 +176,20 @@ export function PineEditorPanel() {
     }
     setAppliedTick((t) => t + 1);
     setConsoleMsg({ tone: "ok", text: `Compilado — '${script.name}' aplicado al chart` });
-  }, [handleSave]);
+  }, [handleSave, activeSystem]);
 
   const handleRemoveFromChart = useCallback(() => {
+    if (activeSystem) {
+      setCamaronZonesOn(false);
+      setConsoleMsg({ tone: "info", text: "Zonas del Camarón quitadas del chart" });
+      return;
+    }
     if (!active) return;
     const chart = getActiveProChart();
     if (chart) removePineScript(chart, active.id);
     setAppliedTick((t) => t + 1);
     setConsoleMsg({ tone: "info", text: `'${active.name}' quitado del chart` });
-  }, [active]);
+  }, [active, activeSystem]);
 
   const handleDelete = useCallback(() => {
     if (!active) return;
@@ -376,6 +405,28 @@ export function PineEditorPanel() {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto">
+          {/* Scripts de SISTEMA fijos (Camarón): siempre arriba, no borrables. */}
+          {SYSTEM_SCRIPTS.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => openSystemScript(s.id)}
+              className={cn(
+                "w-full px-3 py-2 text-left border-b border-white/5 hover:bg-white/5",
+                s.id === activeSystemId ? "bg-white/10 text-white" : "text-white/60",
+              )}
+            >
+              <div className="flex items-center gap-1.5">
+                <span className="truncate font-medium">{s.name}</span>
+                <span className="shrink-0 rounded border border-[#2f6bff]/40 bg-[#2f6bff]/10 px-1 text-[8px] uppercase tracking-wide text-[#7ea6ff]">
+                  sistema
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 text-[9px] text-white/35">
+                {camZonesOn && <span className="text-emerald-400">● en chart</span>}
+              </div>
+            </button>
+          ))}
           {scripts.length === 0 && (
             <div className="px-3 py-4 text-white/40 text-[11px] leading-relaxed">
               Sin scripts todavía. Crea uno con <span className="text-white/70">Nuevo</span> — hay plantillas para arrancar.
@@ -424,7 +475,7 @@ export function PineEditorPanel() {
                 onClick={() => setScriptMenuOpen((v) => !v)}
                 className="flex items-center gap-1 rounded px-2 py-1 text-white/85 font-semibold hover:bg-white/5 max-w-[260px]"
               >
-                <span className="truncate">{active ? active.name : "Script sin título"}</span>
+                <span className="truncate">{activeSystem ? activeSystem.name : active ? active.name : "Script sin título"}</span>
                 <ChevronDown className="h-3 w-3 shrink-0 text-white/40" />
               </button>
             )}
@@ -436,7 +487,7 @@ export function PineEditorPanel() {
                     handleSave();
                     setScriptMenuOpen(false);
                   }}
-                  disabled={!source.trim()}
+                  disabled={!source.trim() || !!activeSystem}
                   className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-white/80 hover:bg-white/5 disabled:opacity-30"
                 >
                   <Save className="h-3.5 w-3.5 text-white/40" /> Guardar script
@@ -502,7 +553,7 @@ export function PineEditorPanel() {
           <button
             type="button"
             onClick={handleSave}
-            disabled={!source.trim()}
+            disabled={!source.trim() || !!activeSystem}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-white/15 text-white/70 hover:bg-white/5 disabled:opacity-30"
             title="Guardar (Ctrl+S)"
           >
@@ -511,7 +562,7 @@ export function PineEditorPanel() {
           <button
             type="button"
             onClick={handleApply}
-            disabled={!source.trim()}
+            disabled={!source.trim() && !activeSystem}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-30"
           >
             <Play className="h-3 w-3" /> {applied ? "Actualizar en chart" : "Añadir al chart"}
@@ -519,7 +570,7 @@ export function PineEditorPanel() {
           <button
             type="button"
             onClick={handleTestStrategy}
-            disabled={!source.trim()}
+            disabled={!source.trim() || !!activeSystem}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-[#2f6bff]/40 bg-[#2f6bff]/10 text-[#7ea6ff] hover:bg-[#2f6bff]/20 disabled:opacity-30"
             title="Backtest sobre las velas cargadas en el chart"
           >
@@ -528,7 +579,7 @@ export function PineEditorPanel() {
           <button
             type="button"
             onClick={handleRemoveFromChart}
-            disabled={!active || !applied}
+            disabled={(!active && !activeSystem) || !applied}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-white/15 text-white/60 hover:bg-white/5 disabled:opacity-30"
           >
             <X className="h-3 w-3" /> Quitar
@@ -557,9 +608,11 @@ export function PineEditorPanel() {
             ref={textRef}
             value={source}
             spellCheck={false}
+            readOnly={!!activeSystem}
             onScroll={onScroll}
             onKeyDown={onKeyDown}
             onChange={(e) => {
+              if (activeSystem) return;
               setSource(e.target.value);
               setDirty(true);
             }}

@@ -43,6 +43,7 @@ import { formatSymbolDisplay, compareSymbols, symbolIcon } from "@/lib/symbolDis
 import { useMarketCandles } from "@/modules/copyTrading/hooks/useMarketCandles";
 import { PineEditorPanel } from "@/components/PineEditorPanel";
 import { StrategyTelemetryBox } from "@/components/StrategyTelemetryBox";
+import { CamaronZonesLayer } from "@/components/CamaronZonesLayer";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/components/ui/sonner";
 import { useConfirm } from "@/components/ConfirmDialogProvider";
@@ -1190,6 +1191,8 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
             {isAdmin && strategyHudOn && (
               <StrategyTelemetryBox symbol={selectedSymbol || null} onClose={() => setStrategyHudOn(false)} />
             )}
+            {/* Zonas EN VIVO del Camarón (script de sistema del panel Pine). */}
+            {isAdmin && <CamaronZonesLayer symbol={selectedSymbol || null} />}
             {USE_CHART_PRO ? (
               <ErrorBoundary
                 fallback={
