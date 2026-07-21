@@ -48,10 +48,13 @@ const APPLIED_KEY = "kai:pine:camaronZones";
 const listeners = new Set<() => void>();
 
 export function isCamaronZonesOn(): boolean {
+  // ON por defecto (feedback usuario: "sigue sin funcionar" cuando el flag
+  // había quedado apagado y ya no se veía el estado): las zonas del Camarón
+  // aparecen solas para admins; "Quitar" persiste el apagado ("0").
   try {
-    return localStorage.getItem(APPLIED_KEY) === "1";
+    return localStorage.getItem(APPLIED_KEY) !== "0";
   } catch {
-    return false;
+    return true;
   }
 }
 
