@@ -66,10 +66,13 @@ export function SettingsDialog({
   onOpenChange,
   settings,
   setSetting,
+  strategyHud,
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
   settings: TerminalSettings;
+  /** Toggle admin del HUD de telemetría de estrategias (oculto para no-admin). */
+  strategyHud?: { value: boolean; onChange: (v: boolean) => void };
   setSetting: <K extends keyof TerminalSettings>(key: K, value: TerminalSettings[K]) => void;
 }) {
   return (
@@ -92,6 +95,14 @@ export function SettingsDialog({
               checked={settings.showPositions}
               onChange={(v) => setSetting("showPositions", v)}
             />
+            {strategyHud && (
+              <Row
+                label="Telemetría de estrategias (admin)"
+                hint="Caja con lo que cada estrategia espera + zonas del Camarón"
+                checked={strategyHud.value}
+                onChange={strategyHud.onChange}
+              />
+            )}
             <Row
               label="TP / SL"
               hint="Líneas de Take Profit y Stop Loss"

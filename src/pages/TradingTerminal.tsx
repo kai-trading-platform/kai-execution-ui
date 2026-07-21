@@ -1137,6 +1137,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         onOpenChange={setSettingsOpen}
         settings={settings}
         setSetting={setSetting}
+        strategyHud={isAdmin ? { value: strategyHudOn, onChange: setStrategyHudOn } : undefined}
       />
       <div className="flex flex-1 overflow-hidden relative">
         <aside
@@ -1184,19 +1185,10 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
             <FavTimeframeBar timeframe={timeframe} onSelect={setTimeframe} />
           )}
           <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
-            {/* HUD admin: telemetría de las estrategias vivas (qué esperan/por qué) + zonas. */}
+            {/* HUD admin de telemetría de estrategias — SIN botón flotante sobre el
+                chart (feedback usuario): se activa desde Configuración. */}
             {isAdmin && strategyHudOn && (
               <StrategyTelemetryBox symbol={selectedSymbol || null} onClose={() => setStrategyHudOn(false)} />
-            )}
-            {isAdmin && !strategyHudOn && (
-              <button
-                type="button"
-                onClick={() => setStrategyHudOn(true)}
-                className="absolute top-12 left-2 z-20 rounded-md border border-white/10 bg-[#0d0f16]/80 px-2 py-1 text-[10px] text-white/50 hover:text-white/85 backdrop-blur-sm"
-                title="Telemetría de estrategias (admin)"
-              >
-                ◎ Estrategias
-              </button>
             )}
             {USE_CHART_PRO ? (
               <ErrorBoundary
