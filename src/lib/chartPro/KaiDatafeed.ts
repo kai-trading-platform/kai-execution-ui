@@ -18,6 +18,9 @@ import { periodDurationMs } from './periods';
 export interface KaiDatafeedDeps {
   getAccountId: () => string | null | undefined;
   getSymbols: () => SymbolInfo[];
+  /** Ticker actualmente seleccionado — para descartar respuestas TARDÍAS de un
+   * símbolo anterior (cambiar de mercado rápido "bugueaba" el chart). */
+  getCurrentTicker?: () => string | null | undefined;
   subscribeSocket: (accountId: string, symbol: string) => void;
   unsubscribeSocket: (accountId: string, symbol: string) => void;
   // Se dispara cada vez que getHistoryKLineData termina (con el nº de velas
@@ -105,6 +108,15 @@ export class KaiDatafeed implements Datafeed {
       if (candles.length > 1) break;
       if (attempt < 2) await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
     }
+    // Cambio rápido de símbolo: si mientras bajaba el histórico el usuario ya
+    // se movió a OTRO símbolo, esta respuesta es vieja — descartarla evita que
+    // las velas del símbolo anterior se pinten sobre el nuevo (bug reportado).
+    const currentNow = this.deps.getCurrentTicker?.();
+    if (currentNow && currentNow !== symbol.ticker) {
+      this.deps.onHistoryLoaded?.(0);
+      return [];
+    }
+
     const data: KLineData[] = candles.map((c) => ({
       timestamp: c.time,
       open: c.open,

@@ -159,6 +159,7 @@ export function KaiChartPro({
     return Array.from(byDisplay.values());
   }, [accountSymbols]);
 
+  const currentTickerRef = useRef<string | null>(null);
   const currentSymbolInfo = useMemo<SymbolInfo | null>(() => {
     if (!symbol) return null;
     return (
@@ -313,6 +314,7 @@ export function KaiChartPro({
     datafeedRef.current = new KaiDatafeed({
       getAccountId: () => accountIdRef.current,
       getSymbols: () => symbolInfosRef.current,
+      getCurrentTicker: () => currentTickerRef.current,
       subscribeSocket: (a, s) => subscribeRef.current(a, s),
       unsubscribeSocket: (a, s) => unsubscribeRef.current(a, s),
       onHistoryLoaded: () => setLoadingHistory(false),
@@ -320,6 +322,10 @@ export function KaiChartPro({
   }
 
   // Crear el widget una sola vez, cuando hay contenedor + símbolo inicial.
+  useEffect(() => {
+    currentTickerRef.current = currentSymbolInfo?.ticker ?? null;
+  }, [currentSymbolInfo]);
+
   const canCreate = Boolean(currentSymbolInfo);
   useEffect(() => {
     if (chartRef.current || !containerRef.current || !datafeedRef.current || !currentSymbolInfo) return;

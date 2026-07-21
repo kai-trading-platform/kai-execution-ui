@@ -429,18 +429,7 @@ export function PineEditorPanel() {
                 s.id === activeSystemId ? "bg-white/10 text-white" : "text-white/60",
               )}
             >
-              <div className="flex items-center gap-1.5">
-                <span className="truncate font-medium">{s.name}</span>
-                <span className="shrink-0 rounded border border-[#2f6bff]/40 bg-[#2f6bff]/10 px-1 text-[8px] uppercase tracking-wide text-[#7ea6ff]">
-                  sistema
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5 text-[9px] text-white/35">
-                {camZonesOn && camZonesStatus?.available !== false && <span className="text-emerald-400">● en chart</span>}
-                {camZonesOn && camZonesStatus?.available === false && (
-                  <span className="text-amber-400/90">sin zonas en {camZonesStatus.root} — el motor evalúa MNQ</span>
-                )}
-              </div>
+              <div className="truncate font-medium">{s.name}</div>
             </button>
           ))}
           {scripts.length === 0 && (
@@ -566,32 +555,38 @@ export function PineEditorPanel() {
               </div>
             )}
           </div>
+          {!activeSystem && (
           <button
             type="button"
             onClick={handleSave}
-            disabled={!source.trim() || !!activeSystem}
+            disabled={!source.trim()}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-white/15 text-white/70 hover:bg-white/5 disabled:opacity-30"
             title="Guardar (Ctrl+S)"
           >
             <Save className="h-3 w-3" /> Guardar
           </button>
+          )}
+          {!(activeSystem && applied) && (
           <button
             type="button"
             onClick={handleApply}
             disabled={!source.trim() && !activeSystem}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 disabled:opacity-30"
           >
-            <Play className="h-3 w-3" /> {applied ? "Actualizar en chart" : "Añadir al chart"}
+            <Play className="h-3 w-3" /> {applied && !activeSystem ? "Actualizar en chart" : "Añadir al chart"}
           </button>
+          )}
+          {!activeSystem && (
           <button
             type="button"
             onClick={handleTestStrategy}
-            disabled={!source.trim() || !!activeSystem}
+            disabled={!source.trim()}
             className="flex items-center gap-1 rounded px-2 py-1 text-[10px] border border-[#2f6bff]/40 bg-[#2f6bff]/10 text-[#7ea6ff] hover:bg-[#2f6bff]/20 disabled:opacity-30"
             title="Backtest sobre las velas cargadas en el chart"
           >
             <Waypoints className="h-3 w-3" /> Probar
           </button>
+          )}
           <button
             type="button"
             onClick={handleRemoveFromChart}
@@ -600,6 +595,7 @@ export function PineEditorPanel() {
           >
             <X className="h-3 w-3" /> Quitar
           </button>
+          {!activeSystem && (
           <button
             type="button"
             onClick={handleDelete}
@@ -609,6 +605,7 @@ export function PineEditorPanel() {
           >
             <Trash2 className="h-3 w-3" />
           </button>
+          )}
         </div>
 
         <div className="flex-1 flex min-h-0">
@@ -700,16 +697,18 @@ export function PineEditorPanel() {
           </div>
         )}
 
-        <div
-          className={cn(
-            "px-3 py-1.5 border-t border-white/10 text-[10px] font-mono min-h-[26px]",
-            consoleMsg?.tone === "error" && "text-red-400",
-            consoleMsg?.tone === "ok" && "text-emerald-400",
-            (!consoleMsg || consoleMsg.tone === "info") && "text-white/45",
-          )}
-        >
-          {consoleMsg?.text ?? "Consola — errores de compilación salen aquí con su línea"}
-        </div>
+        {consoleMsg && (
+          <div
+            className={cn(
+              "px-3 py-1.5 border-t border-white/10 text-[10px] font-mono",
+              consoleMsg.tone === "error" && "text-red-400",
+              consoleMsg.tone === "ok" && "text-emerald-400",
+              consoleMsg.tone === "info" && "text-white/45",
+            )}
+          >
+            {consoleMsg.text}
+          </div>
+        )}
       </div>
     </div>
   );
