@@ -3,7 +3,7 @@ import { PolygonType } from "klinecharts";
 
 import { nestAuthFetch } from "@/api/client";
 import { getActiveProChart } from "@/lib/chartPro/chartInstance";
-import { isCamaronZonesOn, onCamaronZonesChange } from "@/lib/pine/systemScripts";
+import { isCamaronZonesOn, onCamaronZonesChange, setCamaronZonesStatus } from "@/lib/pine/systemScripts";
 
 // Capa HEADLESS de zonas del Camarón: cuando el script de sistema "CAMARÓN ·
 // zonas en vivo" está añadido al chart (panel Pine), dibuja las zonas REALES
@@ -31,7 +31,6 @@ function telemetryRoot(symbol: string): string {
 export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
   const [on, setOn] = useState<boolean>(() => isCamaronZonesOn());
   const [zones, setZones] = useState<Zone[]>([]);
-  const [unavailable, setUnavailable] = useState(false);
   const idsRef = useRef<string[]>([]);
 
   useEffect(() => onCamaronZonesChange(() => setOn(isCamaronZonesOn())), []);
@@ -53,11 +52,11 @@ export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
         if (!alive) return;
         const zs = res?.available ? (res.snapshot?.results.find((r) => Array.isArray(r.zones))?.zones ?? []) : [];
         setZones(zs);
-        setUnavailable(!res?.available);
+        setCamaronZonesStatus(root, Boolean(res?.available));
       } catch {
         if (alive) {
           setZones([]);
-          setUnavailable(true);
+          setCamaronZonesStatus(root, false);
         }
       }
     };
@@ -138,14 +137,7 @@ export function CamaronZonesLayer({ symbol }: { symbol: string | null }) {
     };
   }, [on, zones]);
 
-  // Aviso cuando el script está aplicado pero el motor NO evalúa este símbolo
-  // (las zonas son REALES: solo existen donde el Camarón tiene jobs, hoy MNQ).
-  if (on && symbol && unavailable) {
-    return (
-      <div className="absolute top-12 left-2 z-20 rounded-md border border-amber-500/25 bg-[#0d0f16]/85 px-2.5 py-1.5 text-[10px] text-amber-400/90 backdrop-blur-sm max-w-[300px]">
-        CAMARÓN: el motor no está evaluando {telemetryRoot(symbol)} — cámbiate a un chart de MNQ para ver sus zonas en vivo.
-      </div>
-    );
-  }
+  // Headless: el estado (sin zonas para este símbolo) se muestra en el panel
+  // Pine, no sobre el chart (feedback usuario).
   return null;
 }

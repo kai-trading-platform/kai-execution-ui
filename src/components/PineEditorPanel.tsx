@@ -9,7 +9,7 @@ import { PINE_EXAMPLES } from "@/lib/pine/examples";
 import { applyPineScript, isPineApplied, removePineScript } from "@/lib/pine/pineChart";
 import { getActiveProChart } from "@/lib/chartPro/chartInstance";
 import { loadScripts, newScriptId, saveScripts, type PineScript } from "@/lib/pine/pineStore";
-import { SYSTEM_SCRIPTS, isCamaronZonesOn, setCamaronZonesOn, onCamaronZonesChange } from "@/lib/pine/systemScripts";
+import { SYSTEM_SCRIPTS, isCamaronZonesOn, setCamaronZonesOn, onCamaronZonesChange, getCamaronZonesStatus } from "@/lib/pine/systemScripts";
 
 // Editor Kai Pine (pestaña PINE del panel inferior): lista de scripts +
 // textarea con gutter de líneas + consola. Sin dependencias de editor: un
@@ -65,7 +65,15 @@ export function PineEditorPanel() {
   // Script de SISTEMA activo (Camarón): solo lectura, fijo arriba de la lista.
   const [activeSystemId, setActiveSystemId] = useState<string | null>(null);
   const [camZonesOn, setCamZonesOn] = useState<boolean>(() => isCamaronZonesOn());
-  useEffect(() => onCamaronZonesChange(() => setCamZonesOn(isCamaronZonesOn())), []);
+  const [camZonesStatus, setCamZonesStatus] = useState(() => getCamaronZonesStatus());
+  useEffect(
+    () =>
+      onCamaronZonesChange(() => {
+        setCamZonesOn(isCamaronZonesOn());
+        setCamZonesStatus(getCamaronZonesStatus());
+      }),
+    [],
+  );
   const activeSystem = activeSystemId ? SYSTEM_SCRIPTS.find((s) => s.id === activeSystemId) ?? null : null;
   // Tick para re-leer isPineApplied tras aplicar/quitar.
   const [, setAppliedTick] = useState(0);
@@ -159,7 +167,12 @@ export function PineEditorPanel() {
     // del motor sobre el chart (telemetría real).
     if (activeSystem) {
       setCamaronZonesOn(true);
-      setConsoleMsg({ tone: "ok", text: "Zonas del Camarón EN VIVO aplicadas al chart — se refrescan solas cada 15s" });
+      const st = getCamaronZonesStatus();
+      setConsoleMsg(
+        st && !st.available
+          ? { tone: "info", text: `Aplicado — pero el motor no está evaluando ${st.root}: verás las zonas al abrir un chart de MNQ` }
+          : { tone: "ok", text: "Zonas del Camarón EN VIVO aplicadas al chart — se refrescan solas cada 15s" },
+      );
       return;
     }
     const script = handleSave();
@@ -423,7 +436,10 @@ export function PineEditorPanel() {
                 </span>
               </div>
               <div className="flex items-center gap-1.5 text-[9px] text-white/35">
-                {camZonesOn && <span className="text-emerald-400">● en chart</span>}
+                {camZonesOn && camZonesStatus?.available !== false && <span className="text-emerald-400">● en chart</span>}
+                {camZonesOn && camZonesStatus?.available === false && (
+                  <span className="text-amber-400/90">sin zonas en {camZonesStatus.root} — el motor evalúa MNQ</span>
+                )}
               </div>
             </button>
           ))}

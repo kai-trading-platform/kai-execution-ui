@@ -74,3 +74,24 @@ export function onCamaronZonesChange(cb: () => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
+
+// ── Disponibilidad de zonas para el símbolo actual (la reporta la capa) ─────
+// El aviso "el motor no evalúa X" vive en el PANEL Pine, no sobre el chart
+// (feedback usuario): la capa publica aquí y el panel lo muestra.
+
+let zonesStatus: { root: string; available: boolean } | null = null;
+
+export function setCamaronZonesStatus(root: string, available: boolean): void {
+  zonesStatus = { root, available };
+  for (const cb of listeners) {
+    try {
+      cb();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+export function getCamaronZonesStatus(): { root: string; available: boolean } | null {
+  return zonesStatus;
+}
