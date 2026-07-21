@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth, writeStoredAuth } from "@/contexts/AuthContext";
 import { nestAuthFetch } from "@/api/client";
 
 // Cierre de sesión por INACTIVIDAD del usuario, con el MISMO tiempo configurado
@@ -15,7 +15,7 @@ const CHECK_EVERY_MS = 60_000;
 const ACTIVITY_EVENTS: Array<keyof WindowEventMap> = ["mousemove", "mousedown", "keydown", "touchstart", "wheel"];
 
 export function useInactivityLogout(): void {
-  const { isAuthenticated, logout } = useAuth();
+  const { isAuthenticated, syncFromStorage } = useAuth();
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -48,7 +48,14 @@ export function useInactivityLogout(): void {
     const interval = setInterval(() => {
       if (Date.now() - lastActivity >= timeoutMs) {
         clearInterval(interval);
-        void logout();
+        // Cierre LOCAL solamente: NO llama /api/auth/logout — eso revocaría el
+        // token de la cookie SSO compartida y podía matar la sesión de KAI por
+        // culpa de un terminal olvidado en segundo plano. Al limpiar local, el
+        // guard muestra el login; si la sesión de Kai sigue viva (cookie), el
+        // rescate SSO re-entra solo — exactamente la semántica "una sola
+        // sesión, el mismo tiempo que Kai".
+        writeStoredAuth(null);
+        syncFromStorage();
       }
     }, CHECK_EVERY_MS);
 
@@ -59,5 +66,5 @@ export function useInactivityLogout(): void {
         window.removeEventListener(ev, bump);
       }
     };
-  }, [isAuthenticated, logout]);
+  }, [isAuthenticated, syncFromStorage]);
 }
