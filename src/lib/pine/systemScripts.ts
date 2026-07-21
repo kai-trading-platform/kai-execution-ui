@@ -44,7 +44,9 @@ export const SYSTEM_SCRIPTS: SystemScript[] = [
 
 // ── Estado "aplicado al chart" (persistido; lo lee CamaronZonesLayer) ────────
 
-const APPLIED_KEY = "kai:pine:camaronZones";
+// v2: resetea el flag legado (usuarios con "0" accidental quedaban sin zonas
+// sin forma visible de notarlo). Todos arrancan con el default ON.
+const APPLIED_KEY = "kai:pine:camaronZones.v2";
 const listeners = new Set<() => void>();
 
 export function isCamaronZonesOn(): boolean {
