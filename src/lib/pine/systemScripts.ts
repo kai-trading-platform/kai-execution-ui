@@ -37,7 +37,7 @@ const CAMARON_SOURCE = `// ═══════════ CAMARÓN · script 
 export const SYSTEM_SCRIPTS: SystemScript[] = [
   {
     id: "system-camaron",
-    name: "CAMARÓN · zonas en vivo",
+    name: "CAMARÓN",
     source: CAMARON_SOURCE,
   },
 ];
