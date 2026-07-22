@@ -92,6 +92,7 @@ function boxFor(params: {
     ticket: string;
     tickSize?: number | null;
     tickValue?: number | null;
+    currentPrice?: number | null;
   };
 }): KaiTradeBox | null {
   const { id, side, entry, t0, t1, showTpSl, showLabels, order } = params;
@@ -107,9 +108,20 @@ function boxFor(params: {
   // SL siempre es pérdida (negativo), TP siempre ganancia (positivo).
   let usdAtStop: number | undefined;
   let usdAtTarget: number | undefined;
-  if (order && showLabels) {
-    const usdPP = usdPerPoint(order.tickSize, order.tickValue);
-    if (usdPP != null && order.qty > 0) {
+  if (order && showLabels && order.qty > 0) {
+    // USD-por-punto: preferir el DERIVADO del PnL EN VIVO del bróker. Es robusto
+    // ante símbolos con specs por variante (p.ej. USTEC_x100m tick_value 1 vs
+    // USTECm 0.01) donde tickValue/tickSize puede resolver la variante equivocada
+    // → el USD del TP/SL salía ~100× mal. El PnL del bróker es la verdad, así que
+    // derivamos usdPP = |pnlUsd| / (|precio_actual − entry| × qty). Fallback al
+    // spec tickValue/tickSize cuando aún no hay movimiento (PnL~0) o falta precio.
+    let usdPP = usdPerPoint(order.tickSize, order.tickValue);
+    const cur = order.currentPrice;
+    const move = cur != null && Number.isFinite(cur) ? Math.abs(cur - entry) : 0;
+    if (move > 0 && Number.isFinite(order.pnlUsd) && Math.abs(order.pnlUsd) > 0) {
+      usdPP = Math.abs(order.pnlUsd) / (move * order.qty);
+    }
+    if (usdPP != null && usdPP > 0) {
       if (stop != null && Number.isFinite(stop)) usdAtStop = -Math.abs(entry - stop) * usdPP * order.qty;
       if (target != null && Number.isFinite(target)) usdAtTarget = Math.abs(target - entry) * usdPP * order.qty;
     }
@@ -172,6 +184,7 @@ export function buildKaiTradeBoxes(args: BuildArgs): KaiTradeBox[] {
         ticket: String(p.id),
         tickSize: args.tickSize,
         tickValue: args.tickValue,
+        currentPrice: p.currentPrice,
       },
     });
     if (box) out.push(box);
