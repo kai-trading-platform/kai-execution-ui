@@ -691,12 +691,18 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   // from the `/symbols` payload (AccountSymbol.tick_size / tick_value). Only
   // meaningful in futures mode; null otherwise so the ticket falls back to CFD.
   const tickSpec = useMemo<FuturesTickSpec | null>(() => {
-    if (terminalMode !== "futures" || !selectedSymbol) return null;
+    // tickSize/tickValue para calcular el USD del TP/SL y redondear al tick.
+    // ANTES estaba gated a "futures" → en CFD el USD de las cajas SL/TP no salía
+    // (usdPerPoint devolvía null). La data (tick_size/tick_value) existe también
+    // en CFD (account_symbols de Exness), así que se computa para CUALQUIER
+    // símbolo con spec válido. El sizing/riesgo CFD NO usa esto (usa riskUsd
+    // directo), así que es seguro; solo habilita el USD y el redondeo al tick.
+    if (!selectedSymbol) return null;
     const sym = symbols.find((s) => s.name === selectedSymbol);
     if (!sym) return null;
     if (!(sym.tick_size > 0) || !(sym.tick_value > 0)) return null;
     return { tickSize: sym.tick_size, tickValue: sym.tick_value };
-  }, [terminalMode, selectedSymbol, symbols]);
+  }, [selectedSymbol, symbols]);
 
   const tpNum = parseFloat(takeProfitPrice) || 0;
   const slNum = parseFloat(stopLossPrice) || 0;
