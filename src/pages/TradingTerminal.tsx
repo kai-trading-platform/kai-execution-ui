@@ -446,7 +446,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const reversePos = useReversePosition();
 
   useEffect(() => {
-    document.title = `Kai Trading Terminal${accountId ? ` - ${accountId}` : ""}`;
+    document.title = "Trading Terminal";
   }, [accountId]);
 
   // ── Connection quality (internet health) ────────────────────────────────
