@@ -557,6 +557,51 @@ export function KaiChartPro({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isConnected]);
 
+  // Relleno del histórico cuando el chart se queda sin él. El heal de arriba solo
+  // se dispara en el FLANCO de reconexión (desconectado→conectado): si el widget
+  // se creó antes de que la cuenta estuviera lista, getHistoryKLineData salió por
+  // la guarda `!accountId` devolviendo [], y ese flanco puede no volver a ocurrir
+  // nunca — el chart se quedaba con la vela viva para siempre (síntoma: "carga
+  // eternamente y sale una sola vela"). Aquí se comprueba al montar y cada vez que
+  // cambian cuenta, símbolo o timeframe, reintentando mientras siga vacío.
+  useEffect(() => {
+    const df = datafeedRef.current;
+    if (!df || !accountId || !currentSymbolInfo) return;
+    let cancelled = false;
+    let tries = 0;
+    const MAX_TRIES = 6;
+    const attempt = async () => {
+      if (cancelled) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const chart = chartRef.current?.getChart?.() as any;
+      if (!chart) {
+        if (++tries < MAX_TRIES) setTimeout(attempt, 700);
+        return;
+      }
+      // Un chart sano no se toca: evita resetear la vista del usuario.
+      if ((chart.getDataList?.()?.length ?? 0) >= 5) return;
+      try {
+        const d = await df.getHistoryKLineData(
+          currentSymbolInfo,
+          periodForTimeframe(timeframe),
+        );
+        if (cancelled) return;
+        if (d.length > 0) {
+          chart.applyNewData(d, true);
+          return;
+        }
+      } catch {
+        /* reintento abajo */
+      }
+      if (!cancelled && ++tries < MAX_TRIES) setTimeout(attempt, 1200);
+    };
+    const t = setTimeout(attempt, 800);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [accountId, currentSymbolInfo, timeframe]);
+
   // Resize del chart cuando su CONTENEDOR cambia de tamaño (no solo la ventana).
   // El fork solo escucha `window.resize`; al abrir/cerrar el panel inferior
   // (CUENTAS/POSICIONES/…) el contenedor se encoge pero el canvas mantenía su
