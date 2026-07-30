@@ -110,13 +110,24 @@ async function fetchRawTf(
         `/api/mt5-accounts/${accountId}/rates/${encodeURIComponent(symbol)}?timeframe=${mt5Tf}&count=${count}`,
         { signal: AbortSignal.timeout(RATES_ATTEMPT_TIMEOUT_MS) },
       );
-    } catch {
+    } catch (err) {
       // Timeout, 4xx/5xx o símbolo no disponible en este proveedor: cortar ya.
+      // Se avisa en consola porque un fallo silencioso aquí deja el chart vacío
+      // sin ninguna pista de por qué (nos costó un buen rato diagnosticarlo).
+      console.warn(
+        `[kai-chart] velas: fallo pidiendo ${mt5Tf} x${count} de ${symbol} (cuenta ${accountId}):`,
+        err instanceof Error ? err.message : err,
+      );
       break;
     }
     if (candles && candles.length > 0) break;
   }
-  if (!candles || candles.length === 0) return [];
+  if (!candles || candles.length === 0) {
+    console.warn(
+      `[kai-chart] velas: 0 barras para ${symbol} ${mt5Tf} (cuenta ${accountId}) — el chart quedará vacío`,
+    );
+    return [];
+  }
 
   const byTime = new Map<number, MarketCandle>();
   for (const c of candles) {
