@@ -77,6 +77,9 @@ function aggregateCandles(src: MarketCandle[], bucketMs: number): MarketCandle[]
 /** Tope por intento al pedir velas. Sin él, una cuenta cuyo símbolo no está en
  *  MT5 encadenaba timeouts y el chart giraba varios minutos. */
 const RATES_ATTEMPT_TIMEOUT_MS = 8_000;
+/** Presupuesto TOTAL de la escalera. Sin él, 7 escalones × 8 s (× los reintentos
+ *  del datafeed) volvían a sumar minutos de spinner. */
+const RATES_TOTAL_BUDGET_MS = 12_000;
 
 async function fetchRawTf(
   accountId: string,
@@ -99,7 +102,9 @@ async function fetchRawTf(
     new Set([limit, 10000, 5000, 1000, 300, 50, 5].filter((n) => n > 0 && n <= limit)),
   );
   let candles: RawCandle[] = [];
+  const deadline = Date.now() + RATES_TOTAL_BUDGET_MS;
   for (const count of candidates) {
+    if (Date.now() > deadline) break; // se agotó el presupuesto: no seguir bajando
     try {
       candles = await nestAuthFetch<RawCandle[]>(
         `/api/mt5-accounts/${accountId}/rates/${encodeURIComponent(symbol)}?timeframe=${mt5Tf}&count=${count}`,

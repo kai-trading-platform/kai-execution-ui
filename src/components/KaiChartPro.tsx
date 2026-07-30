@@ -14,6 +14,7 @@ import { useMarketSocket } from '@/contexts/MarketSocketContext';
 import { formatSymbolDisplay } from '@/lib/symbolDisplay';
 import { KaiDatafeed } from '@/lib/chartPro/KaiDatafeed';
 import { setActiveProChart } from '@/lib/chartPro/chartInstance';
+import { restoredIndicatorProps, persistChartIndicators } from '@/lib/chartPro/chartIndicators';
 import { reapplyStoredPineScripts } from '@/lib/pine/pineChart';
 import { CHART_PRO_PERIODS, periodForTimeframe, timeframeFromKeyInput } from '@/lib/chartPro/periods';
 import { useChartDrawings, type SavedDrawing } from '@/hooks/useChartDrawings';
@@ -329,6 +330,10 @@ export function KaiChartPro({
   const canCreate = Boolean(currentSymbolInfo);
   useEffect(() => {
     if (chartRef.current || !containerRef.current || !datafeedRef.current || !currentSymbolInfo) return;
+    // Indicadores persistidos del usuario (sincronizados desde la BD y ya
+    // hidratados en localStorage antes de montar). Sin nada guardado → {main:[],
+    // sub:[]} = chart limpio (EMAS OFF por defecto, tarea A).
+    const savedIndicators = restoredIndicatorProps();
     chartRef.current = new KLineChartPro({
       container: containerRef.current,
       symbol: currentSymbolInfo,
@@ -339,13 +344,13 @@ export function KaiChartPro({
       // Pro trae zh-CN por defecto; forzamos inglés (no bundlea es-ES).
       locale: 'en-US',
       drawingBarVisible: true,
-      // EMAs de la estrategia (entrada/segunda/pullback/bias); la librería trae
-      // 6/12/20 por defecto, así que forzamos calcParams vía el fork.
-      mainIndicators: [{ name: 'EMA', calcParams: [10, 20, 55, 200] }],
-      // Sin panel de volumen por defecto (el Pro trae ['VOL']): se activa
-      // desde Indicator → Sub Indicator → VOL, y el fork lo crea limpio
-      // (sin medias móviles encima de las barras).
-      subIndicators: [],
+      // Indicadores PRINCIPALES: restaurados del usuario, o [] (chart limpio,
+      // EMAS OFF). Nota: pasar [] (NO undefined) evita el fallback ['MA'] de la
+      // librería (KLineChartPro usa `?? ['MA']`).
+      mainIndicators: savedIndicators.main,
+      // Sub-indicadores restaurados, o [] (sin panel de volumen por defecto; el
+      // Pro traería ['VOL']). Se activan desde Indicator → Sub Indicator.
+      subIndicators: savedIndicators.sub,
       timezone: resolveTimezone(timezone),
       // El buscador interno cambió el símbolo → que el panel de orden lo siga.
       onSymbolChange: (ticker) => onSymbolChangeRef.current?.(ticker),
@@ -409,6 +414,17 @@ export function KaiChartPro({
     // símbolo/período/tz se aplican vía setSymbol/setPeriod/setTimezone.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canCreate]);
+
+  // WATCHDOG del overlay de carga: el spinner solo lo apaga onHistoryLoaded, así
+  // que cualquier camino en el que el datafeed no llegue a responder (chart aún
+  // sin crear, símbolo sin histórico, proveedor caído) lo dejaba girando para
+  // siempre. Tras 15 s lo apagamos: es mejor ver el chart vacío que un spinner
+  // eterno (el usuario puede cambiar de TF para forzar otra carga).
+  useEffect(() => {
+    if (!loadingHistory) return;
+    const t = setTimeout(() => setLoadingHistory(false), 15_000);
+    return () => clearTimeout(t);
+  }, [loadingHistory]);
 
   // Cambio de símbolo (o de cuenta → re-fetch con el nuevo accountId).
   useEffect(() => {
@@ -481,6 +497,32 @@ export function KaiChartPro({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTrade?.nonce]);
+
+  // Captura de INDICADORES → localStorage (`kai:chart-indicators`) para que el
+  // sync de preferencias los suba a la BD. El fork no emite un evento al
+  // añadir/quitar un indicador, así que sondeamos el chart interno cada 3s
+  // (persistChartIndicators solo escribe si cambió). Además persistimos al
+  // ocultar/cerrar la pestaña para no perder el último cambio antes del flush.
+  useEffect(() => {
+    if (!canCreate) return;
+    const capture = () => {
+      const inner = chartRef.current?.getChart?.();
+      if (inner) persistChartIndicators(inner);
+    };
+    const id = window.setInterval(capture, 3000);
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') capture();
+    };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', capture);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', capture);
+      capture();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canCreate]);
 
   // Cambio de timeframe desde el terminal.
   useEffect(() => {
@@ -831,7 +873,13 @@ export function KaiChartPro({
       <div ref={containerRef} className="absolute inset-0" />
       {canCreate && loadingHistory && (
         <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-background">
-          <p className="text-[11px] text-muted-foreground">Cargando velas</p>
+          {/* Sin texto "Cargando velas" (feedback usuario): solo tres puntitos
+              BLANCOS que rebotan escalonados, mientras se trae el histórico. */}
+          <div className="flex items-center gap-1.5" aria-label="Cargando velas" role="status">
+            <span className="h-2 w-2 animate-bounce rounded-full bg-white [animation-delay:-0.3s]" />
+            <span className="h-2 w-2 animate-bounce rounded-full bg-white [animation-delay:-0.15s]" />
+            <span className="h-2 w-2 animate-bounce rounded-full bg-white" />
+          </div>
         </div>
       )}
       <FloatingToolbar onSelectTool={activateTool} />
