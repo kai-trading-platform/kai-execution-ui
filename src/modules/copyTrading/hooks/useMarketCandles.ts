@@ -74,6 +74,10 @@ function aggregateCandles(src: MarketCandle[], bucketMs: number): MarketCandle[]
 
 // Fetch + normalización de un TF nativo de MT5, con fallback de count (MT5
 // devuelve VACÍO si se le piden más velas de las que tiene, en vez de clamplear).
+/** Tope por intento al pedir velas. Sin él, una cuenta cuyo símbolo no está en
+ *  MT5 encadenaba timeouts y el chart giraba varios minutos. */
+const RATES_ATTEMPT_TIMEOUT_MS = 8_000;
+
 async function fetchRawTf(
   accountId: string,
   symbol: string,
@@ -85,18 +89,26 @@ async function fetchRawTf(
   // TFs macro (W/MN e incluso D en símbolos nuevos) tienen POCAS barras, así que
   // el piso debe ser bajo (hasta 5) — si no, todo ≥500 volvía vacío y el chart
   // quedaba con 1 sola vela (solo la viva del tick).
+  //
+  // ESCALERA CORTA + TIMEOUT: antes eran 14 peticiones SECUENCIALES sin tope de
+  // tiempo. En una cuenta cuyo símbolo no vive en MT5 (p. ej. Rithmic/APEX) las
+  // 14 devolvían vacío una tras otra y el chart se quedaba MINUTOS girando. Con
+  // 7 escalones y 8 s por intento el peor caso baja de minutos a ~1 min, y un error corta
+  // el bucle en el acto (insistir con otro `count` no lo va a arreglar).
   const candidates = Array.from(
-    new Set(
-      [limit, 10000, 5000, 3000, 2000, 1000, 500, 300, 200, 100, 50, 25, 10, 5].filter(
-        (n) => n > 0 && n <= limit,
-      ),
-    ),
+    new Set([limit, 10000, 5000, 1000, 300, 50, 5].filter((n) => n > 0 && n <= limit)),
   );
   let candles: RawCandle[] = [];
   for (const count of candidates) {
-    candles = await nestAuthFetch<RawCandle[]>(
-      `/api/mt5-accounts/${accountId}/rates/${encodeURIComponent(symbol)}?timeframe=${mt5Tf}&count=${count}`,
-    );
+    try {
+      candles = await nestAuthFetch<RawCandle[]>(
+        `/api/mt5-accounts/${accountId}/rates/${encodeURIComponent(symbol)}?timeframe=${mt5Tf}&count=${count}`,
+        { signal: AbortSignal.timeout(RATES_ATTEMPT_TIMEOUT_MS) },
+      );
+    } catch {
+      // Timeout, 4xx/5xx o símbolo no disponible en este proveedor: cortar ya.
+      break;
+    }
     if (candles && candles.length > 0) break;
   }
   if (!candles || candles.length === 0) return [];

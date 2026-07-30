@@ -89,7 +89,9 @@ interface Token {
   col: number;
 }
 
-const OPS = ["=>", ":=", "==", "!=", ">=", "<=", "and", "or", "not", "?", ":", ">", "<", "+", "-", "*", "/", "%", "(", ")", "[", "]", ",", "=", "."];
+const OPS = ["=>", ":=", "==", "!=", ">=", "<=", "+=", "-=", "*=", "/=", "%=", "and", "or", "not", "?", ":", ">", "<", "+", "-", "*", "/", "%", "(", ")", "[", "]", ",", "=", "."];
+// Asignaciones compuestas de Pine: `x += 1` ≡ `x := x + 1`.
+const COMPOUND_ASSIGN: Record<string, string> = { "+=": "+", "-=": "-", "*=": "*", "/=": "/", "%=": "%" };
 
 function tokenizeLine(line: string, lineNo: number): Token[] {
   const out: Token[] = [];
@@ -161,7 +163,7 @@ const NAMESPACES = new Set([
 ]);
 
 // Variables/funciones integradas globales (sin namespace).
-export const BUILTIN_VARS = new Set(["bar_index", "last_bar_index"]);
+export const BUILTIN_VARS = new Set(["bar_index", "last_bar_index", "time", "time_close"]);
 // Funciones globales (ns = null): nombre → aridad mínima..máxima.
 const GLOBAL_FUNCTIONS: Record<string, [number, number]> = {
   na: [1, 1],
@@ -170,6 +172,17 @@ const GLOBAL_FUNCTIONS: Record<string, [number, number]> = {
   timenow: [0, 0],
   timestamp: [1, 6],
   alertcondition: [1, 3],
+  // fill(plot1, plot2, …): se acepta para compatibilidad; el relleno no se pinta
+  // (las dos series SÍ se ven como líneas).
+  fill: [2, 8],
+  // Componentes de fecha/hora: f(t) o f(t, timezone) — como en TradingView.
+  hour: [0, 2],
+  minute: [0, 2],
+  second: [0, 2],
+  dayofweek: [0, 2],
+  dayofmonth: [0, 2],
+  month: [0, 2],
+  year: [0, 2],
 };
 // Miembros-valor por namespace (para validación; el runtime los resuelve).
 const MEMBER_NAMESPACES: Record<string, Set<string>> = {
@@ -517,13 +530,17 @@ function resolveInputs(e: Expr): Expr {
           case "string":
           case "symbol":
           case "text_area":
+          case "timeframe":
             if (dflt.kind !== "str") throw new PineError(`input.${e.name}() necesita un texto por defecto`, e.line);
             return { kind: "str", value: dflt.value };
+          case "source":
+            // El default ES la serie (hlc3, close…): el input se sustituye por ella.
+            return resolveInputs(dflt);
           case "color":
             // El default es un color (color.new(...), color.lime, #RRGGBB).
             return resolveInputs(dflt);
           default:
-            throw new PineError(`input.${e.name} no soportado (int, float, bool, string, session, color)`, e.line);
+            throw new PineError(`input.${e.name} no soportado (int, float, bool, string, session, timeframe, source, color)`, e.line);
         }
       }
       return {
@@ -567,7 +584,22 @@ function bracketDelta(tokens: Token[]): number {
   return d;
 }
 
+/** Operadores que no pueden terminar una expresión: si la línea acaba en uno,
+ *  Pine continúa en la siguiente (ternarios `? …  :` partidos, sumas colgando…). */
+const DANGLING_OPS = new Set([
+  "?", ":", "+", "-", "*", "/", "%", "and", "or", "not",
+  "==", "!=", ">=", "<=", ">", "<", ",", "=", ":=",
+]);
+
+function endsDangling(tokens: Token[]): boolean {
+  const last = tokens[tokens.length - 1];
+  return !!last && last.type === "op" && DANGLING_OPS.has(last.value);
+}
+
 export function parsePine(source: string): PineProgram {
+  // Estado por compilación (el módulo se reutiliza entre scripts).
+  constColorVars = new Map();
+  plotHandleVars = new Set();
   let siteCounter = 0;
   const nextSiteId = () => ++siteCounter;
 
@@ -590,7 +622,13 @@ export function parsePine(source: string): PineProgram {
     // siguientes líneas físicas hasta cerrar, como TradingView/Python. El
     // statement conserva indent y lineNo de la PRIMERA línea.
     let depth = bracketDelta(tokens);
-    while (depth > 0 && idx + 1 < rawLines.length) {
+    while ((depth > 0 || endsDangling(tokens)) && idx + 1 < rawLines.length) {
+      // Sin paréntesis abiertos, solo continúa si la siguiente línea trae algo
+      // (evita tragarse líneas en blanco o comentarios sueltos).
+      if (depth <= 0) {
+        const peek = tokenizeLine(rawLines[idx + 1], idx + 2);
+        if (peek.length === 0) break;
+      }
       idx++;
       const cont = tokenizeLine(rawLines[idx], idx + 1);
       tokens.push(...cont);
@@ -915,10 +953,11 @@ export function parsePine(source: string): PineProgram {
         (isVarKw || hasType) &&
         nameTok?.type === "ident" &&
         opTok?.type === "op" &&
-        (opTok.value === "=" || opTok.value === ":=");
+        (opTok.value === "=" || opTok.value === ":=" || opTok.value in COMPOUND_ASSIGN);
       // Asignación simple sin prefijo: nombre = expr | nombre := expr
       const isPlain =
-        !isVarKw && !hasType && first.type === "ident" && second?.type === "op" && (second.value === "=" || second.value === ":=");
+        !isVarKw && !hasType && first.type === "ident" && second?.type === "op" &&
+        (second.value === "=" || second.value === ":=" || second.value in COMPOUND_ASSIGN);
       if (isDecl || isPlain) {
         const name = isPlain ? first.value : nameTok!.value;
         const op = isPlain ? second!.value : opTok!.value;
@@ -930,7 +969,39 @@ export function parsePine(source: string): PineProgram {
         p.take(); // '=' o ':='
         const expr = resolveInputs(p.parseExpr(0));
         if (!p.atEnd()) throw new PineError("Contenido extra tras la expresión", lineNo);
+        // `p1 = plot(serie, …)`: en Pine el plot devuelve un handle que luego usa
+        // fill(p1, p2). Emitimos el plot y damos a la variable un id numérico
+        // (el relleno no se pinta, pero ambas series sí y el script compila).
+        if (expr.kind === "call" && expr.ns === null && expr.name === "plot" && op === "=") {
+          if (!topLevel) throw new PineError("plot() solo puede ir en el nivel superior (no dentro de un if)", lineNo);
+          if (expr.args.length < 1) throw new PineError("plot() necesita al menos 1 argumento", lineNo);
+          const mainArg = resolveInputs(expr.args[0]);
+          validateExpr(mainArg, definedVars, lineNo);
+          const colorExpr = expr.named.color ?? null;
+          if (colorExpr) validateColorExpr(colorExpr, lineNo);
+          const titleArg = expr.named.title ? constString(expr.named.title, "title", lineNo) : null;
+          const lw = expr.named.linewidth ? constNumber(expr.named.linewidth, "linewidth", lineNo) : 1;
+          definedVars.add(name);
+          plotHandleVars.add(name);
+          return { kind: "plot", expr: mainArg, color: colorExpr, title: titleArg, linewidth: lw, line: lineNo };
+        }
         validateExpr(expr, definedVars, lineNo);
+        // ¿La variable guarda un color constante? (para `color.new(c, 40)` y `color=c`)
+        if (isColorExpr(expr)) constColorVars.set(name, expr);
+        if (op in COMPOUND_ASSIGN) {
+          if (isVarKw || hasType) {
+            throw new PineError(`'${op}' modifica una variable existente; no lleva 'var' ni tipo delante`, lineNo);
+          }
+          if (!definedVars.has(name)) {
+            throw new PineError(`'${op}' modifica una variable existente y '${name}' no está definida`, lineNo);
+          }
+          return {
+            kind: "reassign",
+            name,
+            expr: { kind: "bin", op: COMPOUND_ASSIGN[op], left: { kind: "ident", name, line: lineNo }, right: expr },
+            line: lineNo,
+          };
+        }
         if (op === ":=") {
           if (isVarKw || hasType) {
             throw new PineError("':=' reasigna; no lleva 'var' ni tipo delante (usa '=' para declarar)", lineNo);
@@ -1027,7 +1098,7 @@ export const TA_TUPLE_FUNCTIONS: Record<string, { args: number; returns: number 
   dmi: { args: 2, returns: 3 }, //  [diPlus, diMinus, adx]          = ta.dmi(diLength, adxSmoothing)
 };
 
-export const MATH_FUNCTIONS = new Set(["abs", "max", "min", "round", "floor", "ceil", "sqrt", "pow", "log", "avg", "sign", "exp"]);
+export const MATH_FUNCTIONS = new Set(["abs", "max", "min", "round", "floor", "ceil", "sqrt", "pow", "log", "log10", "avg", "sign", "exp", "sum"]);
 
 export const STRATEGY_MEMBERS = new Set(["long", "short", "position_size", "position_avg_price"]);
 
@@ -1054,6 +1125,20 @@ export const COLOR_CONSTANTS: Record<string, string> = {
 // Funciones de usuario visibles para validateExpr (set por parsePine, no
 // reentrante: el parseo es síncrono y de un solo programa a la vez).
 let currentUserFuncs = new Map<string, { params: { name: string; default: Expr | null }[] }>();
+// Variables cuyo valor es un color CONSTANTE (`c = color.new(#089981, 0)`), para que
+// `color.new(c, 40)` / `color=c` se resuelvan aunque el color venga por variable.
+let constColorVars = new Map<string, Expr>();
+/** Variables que guardan el handle de un plot (`p = plot(...)`), para fill(p1, p2). */
+let plotHandleVars = new Set<string>();
+
+/** ¿La expresión es un color constante (color.*, color.new/rgb, #hex o var de color)? */
+function isColorExpr(e: Expr): boolean {
+  if (e.kind === "str") return HEX_COLOR.test(e.value);
+  if (e.kind === "member") return e.ns === "color";
+  if (e.kind === "call") return e.ns === "color";
+  if (e.kind === "ident") return constColorVars.has(e.name);
+  return false;
+}
 
 function validateExpr(e: Expr, definedVars: Set<string>, line: number): void {
   switch (e.kind) {
@@ -1089,9 +1174,20 @@ function validateExpr(e: Expr, definedVars: Set<string>, line: number): void {
       }
       throw new PineError(`'${e.ns}.${e.name}' no es un valor (¿faltan paréntesis?)`, line);
     case "call": {
+      // timeframe.change("D"/"W"/"M"): true en la 1ª barra de cada periodo.
+      if (e.ns === "timeframe" && e.name === "change") {
+        if (e.args.length !== 1) throw new PineError('timeframe.change("D") espera 1 argumento', line);
+        validateExpr(e.args[0], definedVars, line);
+        return;
+      }
       if (e.ns === "ta") {
         if (!(e.name in TA_FUNCTIONS)) throw new PineError(`Función desconocida 'ta.${e.name}'`, line);
         const expected = TA_FUNCTIONS[e.name];
+        // ta.tr acepta el flag opcional handle_na: ta.tr(true).
+        if (e.name === "tr" && e.args.length <= 1) {
+          for (const a of e.args) validateExpr(a, definedVars, line);
+          return;
+        }
         if (e.args.length !== expected) {
           throw new PineError(`ta.${e.name}() espera ${expected} argumento(s) y recibió ${e.args.length}`, line);
         }
@@ -1190,6 +1286,8 @@ function colorWithAlpha(css: string, alpha: number): string {
 
 /** Colores fase 1: constantes (color.red, color.rgb, o literal hex #RRGGBB). */
 function validateColorExpr(e: Expr, line: number): void {
+  // Variable que guarda un color constante: `c = color.new(#089981, 0)` → color=c
+  if (e.kind === "ident" && constColorVars.has(e.name)) return;
   if (e.kind === "member" && e.ns === "color") {
     if (!(e.name in COLOR_CONSTANTS)) throw new PineError(`Color desconocido 'color.${e.name}'`, line);
     return;
@@ -1212,6 +1310,10 @@ function validateColorExpr(e: Expr, line: number): void {
 /** Evalúa un color constante ya validado → string CSS. */
 export function evalColorExpr(e: Expr | null, fallback: string): string {
   if (!e) return fallback;
+  if (e.kind === "ident") {
+    const bound = constColorVars.get(e.name);
+    return bound ? evalColorExpr(bound, fallback) : fallback;
+  }
   if (e.kind === "str" && HEX_COLOR.test(e.value)) return e.value;
   if (e.kind === "member" && e.ns === "color") return COLOR_CONSTANTS[e.name] ?? fallback;
   if (e.kind === "call" && e.ns === "color" && e.name === "rgb") {

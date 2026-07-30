@@ -405,6 +405,8 @@ export function runPine(statements: Stmt[], bars: PineBar[], opts: RunOptions = 
         if (e.name === "false") return 0;
         if (e.name === "na") return NaN;
         if (e.name === "bar_index") return i;
+        if (e.name === "time") return bars[i]?.time ?? NaN;
+        if (e.name === "time_close") return bars[i]?.time ?? NaN;
         if (e.name === "last_bar_index") return n - 1;
         const sc = localTop();
         if (sc && sc.has(e.name)) return sc.get(e.name)!;
@@ -822,6 +824,38 @@ export function runPine(statements: Stmt[], bars: PineBar[], opts: RunOptions = 
           if (!Number.isNaN(v)) return v;
           return e.args.length > 1 ? evalExpr(e.args[1], i) : 0;
         }
+        case "hour":
+        case "minute":
+        case "second":
+        case "dayofweek":
+        case "dayofmonth":
+        case "month":
+        case "year": {
+          // f() usa el tiempo de la barra; f(t) un tiempo dado; f(t, tz) con zona.
+          const t0 = e.args.length >= 1 ? evalExpr(e.args[0], i) : bars[i]?.time;
+          if (typeof t0 !== "number" || !Number.isFinite(t0)) return NaN;
+          const tzArg = e.args.length >= 2 ? getString(evalExpr(e.args[1], i)) : null;
+          const d = new Date(t0 + tzOffsetMinutes(tzArg ?? ctxTimezone) * 60000);
+          switch (e.name) {
+            case "hour":
+              return d.getUTCHours();
+            case "minute":
+              return d.getUTCMinutes();
+            case "second":
+              return d.getUTCSeconds();
+            case "dayofweek":
+              return d.getUTCDay() + 1; // Pine: domingo = 1
+            case "dayofmonth":
+              return d.getUTCDate();
+            case "month":
+              return d.getUTCMonth() + 1;
+            default:
+              return d.getUTCFullYear();
+          }
+        }
+        case "fill":
+          // Compatibilidad: se acepta y no pinta relleno (ambas series se ven).
+          return NaN;
         case "timenow":
           return bars[n - 1]?.time ?? NaN;
         case "timestamp":
@@ -878,9 +912,47 @@ export function runPine(statements: Stmt[], bars: PineBar[], opts: RunOptions = 
     if (e.ns === "array") {
       return evalArray(e, i);
     }
+    if (e.ns === "timeframe" && e.name === "change") {
+      // Clave del periodo (día/semana/mes) en la zona del símbolo; cambia → true.
+      const t = bars[i]?.time;
+      if (typeof t !== "number") return 0;
+      const tf = (getString(evalExpr(e.args[0], i)) ?? "D").toUpperCase();
+      const d = new Date(t + tzOffsetMinutes(ctxTimezone) * 60000);
+      let key: string;
+      if (tf.includes("M") && !tf.includes("MIN")) key = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+      else if (tf.includes("W")) {
+        const day = d.getUTCDay();
+        const monday = new Date(d.getTime() - ((day + 6) % 7) * 86400000);
+        key = `${monday.getUTCFullYear()}-${monday.getUTCMonth()}-${monday.getUTCDate()}`;
+      } else key = `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+      const st = (siteStates.get(e.siteId) as Record<string, number> | undefined) ?? {};
+      const prev = (st as unknown as { key?: string }).key;
+      (st as unknown as { key?: string }).key = key;
+      siteStates.set(e.siteId, st);
+      return prev === undefined ? 0 : prev === key ? 0 : 1;
+    }
     if (e.ns === "math") {
+      // math.sum(src, len): suma rodante — necesita estado POR CALL-SITE, así que
+      // se resuelve antes de evaluar el resto de argumentos como valores sueltos.
+      if (e.name === "sum") {
+        const v = evalExpr(e.args[0], i);
+        const len = constLen(e.args[1], e.line);
+        let st = siteStates.get(e.siteId) as WindowState | undefined;
+        if (!st) {
+          st = { values: [] };
+          siteStates.set(e.siteId, st);
+        }
+        st.values.push(v);
+        if (st.values.length > len) st.values.shift();
+        if (st.values.length < len) return NaN;
+        let acc = 0;
+        for (const x of st.values) acc += x;
+        return acc;
+      }
       const args = e.args.map((a) => evalExpr(a, i));
       switch (e.name) {
+        case "log10":
+          return Math.log10(args[0]);
         case "abs":
           return Math.abs(args[0]);
         case "max":

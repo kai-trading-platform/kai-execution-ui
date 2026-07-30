@@ -64,4 +64,31 @@ describe("fetchCandles routing", () => {
     expect(nestAuthFetch.mock.calls[1][0]).toContain("count=10000");
     expect(out).toHaveLength(1);
   });
+  it("corta el bucle si un intento falla (no encadena timeouts)", async () => {
+    // Regresión: con un símbolo que no vive en MT5, los 14 intentos secuenciales
+    // encadenaban timeouts y el chart giraba MINUTOS. Un fallo corta ya.
+    nestAuthFetch.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("TimeoutError"));
+
+    const out = await fetchCandles("acc", "MNQ", "5m", 20000);
+
+    expect(nestAuthFetch).toHaveBeenCalledTimes(2);
+    expect(out).toEqual([]);
+  });
+
+  it("cada intento lleva AbortSignal (tope de tiempo por petición)", async () => {
+    nestAuthFetch.mockResolvedValueOnce([bar]);
+
+    await fetchCandles("acc", "MNQ", "5m", 20000);
+
+    const init = nestAuthFetch.mock.calls[0][1];
+    expect(init?.signal).toBeDefined();
+  });
+
+  it("la escalera no pasa de 7 intentos", async () => {
+    nestAuthFetch.mockResolvedValue([]);
+
+    await fetchCandles("acc", "MNQ", "5m", 20000);
+
+    expect(nestAuthFetch.mock.calls.length).toBeLessThanOrEqual(7);
+  });
 });
