@@ -52,7 +52,6 @@ import {
   modeForProvider,
   strategyForMode,
   resolveOrdersEnabled,
-  clampToMaxContracts,
   estimateFuturesRisk,
   accountsForRoute,
   type TerminalMode,
@@ -202,7 +201,12 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
       const anchor = Number.isFinite(from) ? from : toRaw;
       if (!Number.isFinite(anchor) || !t.symbol) return;
       const to = Number.isFinite(toRaw) ? toRaw : anchor;
-      if (t.symbol !== selectedSymbol) setSelectedSymbol(t.symbol);
+      // Además de llevar el chart al trade, ABRIR el mercado como pestaña arriba
+      // (si no estaba) y dejarlo SELECCIONADO — como si el usuario lo agregara.
+      // setState con el mismo valor es no-op, así que no hace falta leer estado
+      // previo → deps vacías (setters de useState son estables).
+      setOpenSymbols((prev) => (prev.includes(t.symbol) ? prev : [...prev, t.symbol]));
+      setSelectedSymbol(t.symbol);
       focusNonceRef.current += 1;
       setFocusTrade({
         symbol: t.symbol,
@@ -211,7 +215,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         nonce: focusNonceRef.current,
       });
     },
-    [selectedSymbol],
+    [],
   );
   // Doble clic en una POSICIÓN abierta → centrar el chart en su entrada (la
   // caja se extiende entrada→ahora, así que centramos en la entrada).
@@ -219,7 +223,9 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     (p: CopyTradingPosition) => {
       const from = p.openedAtIso ? Date.parse(p.openedAtIso) : NaN;
       if (!Number.isFinite(from) || !p.symbol) return;
-      if (p.symbol !== selectedSymbol) setSelectedSymbol(p.symbol);
+      // Abrir el mercado como pestaña arriba (si no estaba) y seleccionarlo.
+      setOpenSymbols((prev) => (prev.includes(p.symbol) ? prev : [...prev, p.symbol]));
+      setSelectedSymbol(p.symbol);
       focusNonceRef.current += 1;
       setFocusTrade({
         symbol: p.symbol,
@@ -228,7 +234,7 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
         nonce: focusNonceRef.current,
       });
     },
-    [selectedSymbol],
+    [],
   );
   const [categoryFilter, setCategoryFilter] = useState<string>("TODO");
   const [orderType, setOrderType] = useState<OrderType>("MERCADO");
@@ -2758,10 +2764,11 @@ function TradePanel({
   const slDist = isRisk && parseFloat(stopLossPrice) > 0 ? Math.abs(lastPrice - parseFloat(stopLossPrice)) : 0;
   const riskUsd = capital != null && parseFloat(riskPct) > 0 ? capital * (parseFloat(riskPct) / 100) : 0;
   // Mode-aware sizing: CFD reproduces the naive `riskUsd/slDist` lots exactly;
-  // futures returns integer contracts via `floor(riskUsd/(slTicks×tickValue))`,
-  // then clamps to the Apex maxContracts cap when it is known.
+  // futures returns integer contracts via `floor(riskUsd/(slTicks×tickValue))`.
+  // NO se recorta al cap de autotrading: ese tope es para el sizing de Kai, no
+  // para el ticket manual (el gate de riesgo del backend sigue vigente).
   const rawComputedSize = slDist > 0 && riskUsd > 0 ? strategy.computeSize(riskUsd, slDist, tickSpec) : 0;
-  const computedSize = isFutures ? clampToMaxContracts(rawComputedSize, maxContracts) : rawComputedSize;
+  const computedSize = rawComputedSize;
   // Estimated USD risk for the (integer, capped) futures size shown in preview.
   const estRisk = isFutures ? estimateFuturesRisk(computedSize, slDist, tickSpec) : riskUsd;
   useEffect(() => {
@@ -2789,10 +2796,11 @@ function TradePanel({
   // ── AlphaTrader futures ticket (contracts) ───────────────────────────────
   if (isFutures) {
     const contractCount = Math.max(1, parseInt(volume || "1", 10) || 1);
-    const clampQty = (n: number) => {
-      const floored = Math.max(1, Math.round(n));
-      return maxContracts != null && maxContracts > 0 ? Math.min(floored, maxContracts) : floored;
-    };
+    // El tope `autotrading:maxContracts` es del trading AUTOMÁTICO de Kai; en el
+    // ticket MANUAL el tamaño lo decide el operador, así que aquí NO se recorta
+    // (antes los presets 3/5/10 volvían a 1 y parecía que "no registraba"). El
+    // backend mantiene el gate de riesgo por operación, que sí puede rechazarla.
+    const clampQty = (n: number) => Math.max(1, Math.round(n));
     const setQty = (n: number) => setVolume(String(clampQty(n)));
     const stepQty = (d: number) => setQty(contractCount + d);
     const posPx = (v: number | null | undefined) => (v == null ? "—" : v.toFixed(v > 0 && v < 20 ? 5 : 2));
@@ -2874,7 +2882,7 @@ function TradePanel({
               className="h-9 bg-[#151824] border-white/10 text-white tabular-nums"
             />
             <div className="text-[10px] text-white/40 mt-1 tabular-nums">
-              {contractCount} contrato(s){maxContracts != null && maxContracts > 0 ? ` · máx ${maxContracts}` : ""}
+              {contractCount} contrato(s)
             </div>
           </div>
           {/* Quick-qty row */}
@@ -3125,7 +3133,7 @@ function TradePanel({
           </div>
           <div className="text-[11px] text-white/50 mt-1 tabular-nums">
             {isFutures
-              ? `${parseInt(volume || "0", 10) || 0} contrato(s)${maxContracts != null && maxContracts > 0 ? ` · máx ${maxContracts}` : ""}`
+              ? `${parseInt(volume || "0", 10) || 0} contrato(s)`
               : hasData ? `≈ $${notional.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "Sin precio disponible"}
           </div>
         </div>
