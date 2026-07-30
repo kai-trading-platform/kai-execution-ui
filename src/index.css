@@ -443,6 +443,14 @@ body[data-scroll-locked], [data-scroll-locked] {
   --klinecharts-pro-selected-color: rgba(47, 107, 255, 0.15);
 }
 
+/* El widget trae SU PROPIO indicador de carga (3 círculos en el color primario,
+   z-index 50) que se pintaba ENCIMA del nuestro (3 puntos blancos, z-20): se
+   veían dos loaders a la vez, seis bolitas. Nos quedamos con el nuestro, que
+   además tapa la marca de agua mientras baja el histórico. */
+.klinecharts-pro-loading {
+  display: none !important;
+}
+
 /* @klinecharts/pro — estilos de nuestras adiciones del fork (popover de texto y
    aviso de error del datafeed). El CSS del widget se sirve desde node_modules
    (ver alias en vite.config.ts), así que estas clases nuevas viven aquí en la
