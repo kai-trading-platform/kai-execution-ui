@@ -115,11 +115,20 @@ function boxFor(params: {
     // → el USD del TP/SL salía ~100× mal. El PnL del bróker es la verdad, así que
     // derivamos usdPP = |pnlUsd| / (|precio_actual − entry| × qty). Fallback al
     // spec tickValue/tickSize cuando aún no hay movimiento (PnL~0) o falta precio.
-    let usdPP = usdPerPoint(order.tickSize, order.tickValue);
+    const specPP = usdPerPoint(order.tickSize, order.tickValue);
+    let usdPP = specPP;
     const cur = order.currentPrice;
     const move = cur != null && Number.isFinite(cur) ? Math.abs(cur - entry) : 0;
     if (move > 0 && Number.isFinite(order.pnlUsd) && Math.abs(order.pnlUsd) > 0) {
-      usdPP = Math.abs(order.pnlUsd) / (move * order.qty);
+      const derived = Math.abs(order.pnlUsd) / (move * order.qty);
+      // El PnL del bróker y el precio actual llegan de fuentes distintas y con un
+      // tick de desfase, así que el derivado oscila un 3-5% y el USD del TP/SL
+      // bailaba (en MYM salía +208,50 donde son +200,50). Cuando el spec y el
+      // derivado están en el MISMO orden de magnitud mandamos el spec, que es
+      // exacto y estable; si difieren mucho es que el spec resolvió la variante
+      // equivocada (caso USTEC_x100m, ~100×) y entonces manda el derivado.
+      const ratio = specPP != null && specPP > 0 ? derived / specPP : null;
+      usdPP = ratio != null && ratio > 0.5 && ratio < 2 ? specPP : derived;
     }
     if (usdPP != null && usdPP > 0) {
       if (stop != null && Number.isFinite(stop)) usdAtStop = -Math.abs(entry - stop) * usdPP * order.qty;
