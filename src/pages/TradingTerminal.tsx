@@ -265,6 +265,14 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   const [stopLossEnabled, setStopLossEnabled] = useState<boolean>(false);
   const [takeProfitPrice, setTakeProfitPrice] = useState<string>("");
   const [stopLossPrice, setStopLossPrice] = useState<string>("");
+  // Lado que el operador está preparando. Antes NO existía: el bracket se
+  // prellenaba siempre con TP arriba / SL abajo (layout de COMPRA) y el preview
+  // del chart se dibujaba con side:"buy" fijo, así que al preparar una VENTA los
+  // niveles salían al revés. El backend usa Math.abs() para convertir a
+  // distancia, o sea que la orden no se rompía, pero los roles TP/SL quedaban
+  // intercambiados respecto a lo que el operador veía. Con el lado explícito el
+  // prellenado, el preview y la validación miran todos al mismo sitio.
+  const [ticketSide, setTicketSide] = useState<"buy" | "sell">("buy");
   // Pestaña inferior activa (CUENTAS/POSICIONES/ORDENES) — persistida en
   // localStorage con el mismo patrón que kai:bottomOpen, para que un refresh
   // te deje donde estabas.
@@ -731,12 +739,12 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
     const slOn = stopLossEnabled && slNum > 0;
     if ((!tpOn && !slOn) || !(lastPrice > 0)) return null;
     return {
-      side: "buy" as const, // las zonas verde(TP)/roja(SL) no dependen del lado
+      side: ticketSide,
       entry: lastPrice,
       tp: tpOn ? tpNum : 0,
       sl: slOn ? slNum : 0,
     };
-  }, [takeProfitEnabled, stopLossEnabled, tpNum, slNum, lastPrice]);
+  }, [takeProfitEnabled, stopLossEnabled, tpNum, slNum, lastPrice, ticketSide]);
 
   const errorMessage = (e: unknown, fallback: string) => {
     const raw = e instanceof Error && e.message ? e.message : "";
@@ -977,6 +985,16 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
       uiPositions.find((p) => p.symbol === selectedSymbol || formatSymbolDisplay(p.symbol) === disp) ?? null
     );
   }, [uiPositions, selectedSymbol]);
+
+  // Con una posición abierta el gesto habitual es AÑADIR contratos (promediar),
+  // no darle la vuelta: el ticket arranca en el lado de la posición. Depende solo
+  // del símbolo y del lado, así que reencuadrar la posición (qty/precio medio) no
+  // pisa lo que el operador haya elegido a mano.
+  const activeSideKey = activePosition ? `${activePosition.symbol}:${activePosition.side}` : null;
+  useEffect(() => {
+    if (!activeSideKey) return;
+    setTicketSide(activeSideKey.endsWith(":LONG") ? "buy" : "sell");
+  }, [activeSideKey]);
 
   // Fase B — bulk/flip futures actions. All server-gated by
   // RITHMIC_TERMINAL_ORDERS_ENABLED + the account capability flag (the buttons
@@ -1396,6 +1414,8 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
             strategy={strategy}
             tickSpec={tickSpec}
             maxContracts={maxContracts}
+            ticketSide={ticketSide}
+            setTicketSide={setTicketSide}
             activePosition={activePosition}
             onClosePosition={activePosition ? () => handleClosePosition(activePosition) : undefined}
             onReverse={onReverse}
@@ -1443,6 +1463,8 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
               strategy={strategy}
               tickSpec={tickSpec}
               maxContracts={maxContracts}
+              ticketSide={ticketSide}
+              setTicketSide={setTicketSide}
               activePosition={activePosition}
               onClosePosition={activePosition ? () => handleClosePosition(activePosition) : undefined}
               onReverse={onReverse}
@@ -2700,6 +2722,8 @@ function TradePanel({
   strategy,
   tickSpec,
   maxContracts,
+  ticketSide,
+  setTicketSide,
   activePosition,
   onClosePosition,
   onReverse,
@@ -2736,6 +2760,8 @@ function TradePanel({
   strategy: TerminalStrategy;
   tickSpec: FuturesTickSpec | null;
   maxContracts: number | null;
+  ticketSide: "buy" | "sell";
+  setTicketSide: (s: "buy" | "sell") => void;
   activePosition?: CopyTradingPosition | null;
   onClosePosition?: () => void;
   onReverse?: () => void;
@@ -2804,15 +2830,82 @@ function TradePanel({
     const setQty = (n: number) => setVolume(String(clampQty(n)));
     const stepQty = (d: number) => setQty(contractCount + d);
     const posPx = (v: number | null | undefined) => (v == null ? "—" : v.toFixed(v > 0 && v < 20 ? 5 : 2));
+    // El bracket se prellena SEGÚN EL LADO: comprando, el TP va por encima y el
+    // SL por debajo; vendiendo, al revés. Antes era siempre el layout de compra,
+    // así que preparar una venta dejaba los niveles cruzados.
     const toggleBracket = (v: boolean) => {
       setBracketOn(v);
       setTakeProfitEnabled(v);
       setStopLossEnabled(v);
       if (v && hasData) {
-        if (!(parseFloat(takeProfitPrice) > 0)) setTakeProfitPrice((lastPrice + 50 * pipSize).toFixed(priceDec));
-        if (!(parseFloat(stopLossPrice) > 0)) setStopLossPrice((lastPrice - 50 * pipSize).toFixed(priceDec));
+        const d = 50 * pipSize;
+        const tp = ticketSide === "buy" ? lastPrice + d : lastPrice - d;
+        const sl = ticketSide === "buy" ? lastPrice - d : lastPrice + d;
+        if (!(parseFloat(takeProfitPrice) > 0)) setTakeProfitPrice(tp.toFixed(priceDec));
+        if (!(parseFloat(stopLossPrice) > 0)) setStopLossPrice(sl.toFixed(priceDec));
       }
     };
+    // Cambiar de lado ESPEJA los niveles alrededor del precio actual: se conservan
+    // las distancias que el operador ya había elegido en lugar de dejarlas al revés.
+    const chooseSide = (side: "buy" | "sell") => {
+      if (side === ticketSide) return;
+      setTicketSide(side);
+      if (!bracketOn || !hasData) return;
+      const tp = parseFloat(takeProfitPrice);
+      const sl = parseFloat(stopLossPrice);
+      if (tp > 0) setTakeProfitPrice((2 * lastPrice - tp).toFixed(priceDec));
+      if (sl > 0) setStopLossPrice((2 * lastPrice - sl).toFixed(priceDec));
+    };
+    // Pulsar el botón del lado CONTRARIO con el bracket activo solo reorienta el
+    // ticket: `chooseSide` espeja TP/SL con setState y ese valor todavía no habría
+    // llegado al submit de este mismo clic, así que se enviarían los niveles
+    // viejos (cruzados). El segundo clic, ya con los niveles correctos, ejecuta.
+    const onSideButton = (side: "buy" | "sell") => {
+      if (bracketOn && side !== ticketSide) {
+        chooseSide(side);
+        return;
+      }
+      chooseSide(side);
+      onSubmit(side);
+    };
+    // Un TP/SL del lado equivocado NO hace lo que el operador ve: el bridge
+    // convierte los precios a distancia con Math.abs(), así que un "TP" por debajo
+    // en una compra acabaría como objetivo por arriba y los roles TP/SL quedarían
+    // intercambiados. Se bloquea y se explica en vez de ejecutar otra cosa.
+    const tpVal = parseFloat(takeProfitPrice);
+    const slVal = parseFloat(stopLossPrice);
+    const wantTpAbove = ticketSide === "buy";
+    const bracketError =
+      !bracketOn || !hasData
+        ? null
+        : tpVal > 0 && (tpVal > lastPrice) !== wantTpAbove
+          ? wantTpAbove
+            ? "En una compra el Take Profit va POR ENCIMA del precio."
+            : "En una venta el Take Profit va POR DEBAJO del precio."
+          : slVal > 0 && (slVal < lastPrice) !== wantTpAbove
+            ? wantTpAbove
+              ? "En una compra el Stop Loss va POR DEBAJO del precio."
+              : "En una venta el Stop Loss va POR ENCIMA del precio."
+            : null;
+    // Qué le pasa a la posición abierta si ejecutas este ticket. Añadir contratos
+    // del mismo lado es PROMEDIAR (el bróker recalcula el precio medio); del lado
+    // contrario reduce, cierra o invierte según el tamaño.
+    const posQty = Math.abs(Number(activePosition?.qty) || 0);
+    const posAvg = Number(activePosition?.avgPrice) || 0;
+    const sameSide = !!activePosition && (activePosition.side === "LONG") === (ticketSide === "buy");
+    const positionEffect = !activePosition
+      ? null
+      : sameSide
+        ? `Promediar · ${posQty} → ${posQty + contractCount} contratos${
+            posAvg > 0 && hasData
+              ? ` · precio medio ≈ ${((posQty * posAvg + contractCount * lastPrice) / (posQty + contractCount)).toFixed(priceDec)}`
+              : ""
+          }`
+        : contractCount < posQty
+          ? `Reduce · ${posQty} → ${posQty - contractCount} contratos`
+          : contractCount === posQty
+            ? "Cierra la posición completa"
+            : `Invierte · queda ${contractCount - posQty} ${ticketSide === "buy" ? "LONG" : "SHORT"}`;
     const qtyPresets = [1, 3, 5, 10, 15];
     const secBtn = "h-9 rounded-md border border-white/12 bg-transparent text-[11px] font-semibold uppercase tracking-wide text-white/80 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors";
     return (
@@ -2928,6 +3021,17 @@ function TradePanel({
                 ? `${activePosition.side === "LONG" ? "LONG" : "SHORT"} ${activePosition.qty} @ ${posPx(activePosition.avgPrice)}`
                 : "No Active Positions"}
             </div>
+            {positionEffect && (
+              <div
+                className={cn(
+                  "mt-1 rounded-md px-2 py-1 text-[10px] text-center tabular-nums",
+                  sameSide ? "bg-[#2f6bff]/10 text-[#8fb0ff]" : "bg-[#e0413d]/10 text-[#ff9b98]",
+                )}
+              >
+                {sameSide ? "\u2795 " : "\u2796 "}
+                {positionEffect}
+              </div>
+            )}
           </div>
           {/* Bid / Last / Ask */}
           <div className="grid grid-cols-3 rounded-md overflow-hidden border border-white/10 text-center">
@@ -2942,6 +3046,29 @@ function TradePanel({
             <div className="bg-[#2ed68d]/10 py-2">
               <div className="text-[9px] uppercase tracking-wide text-[#42d99a]">Ask</div>
               <div className="text-sm tabular-nums text-[#5ce3ab]">{hasData ? askPrice.toFixed(priceDec) : "—"}</div>
+            </div>
+          </div>
+          {/* Lado de la orden — gobierna el prellenado del bracket, el preview del
+              chart y la validación de TP/SL. Sin esto el ticket asumía COMPRA. */}
+          <div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Lado de la orden</div>
+            <div className="grid grid-cols-2 gap-1 rounded-md border border-white/10 bg-[#151824] p-1">
+              {(["buy", "sell"] as const).map((sd) => (
+                <button
+                  key={sd}
+                  onClick={() => chooseSide(sd)}
+                  className={cn(
+                    "h-8 rounded text-[11px] font-bold uppercase tracking-wide transition-colors",
+                    ticketSide === sd
+                      ? sd === "buy"
+                        ? "bg-[#1aa86a] text-white"
+                        : "bg-[#e0413d] text-white"
+                      : "text-white/55 hover:bg-white/5",
+                  )}
+                >
+                  {sd === "buy" ? "Comprar" : "Vender"}
+                </button>
+              ))}
             </div>
           </div>
           {/* OCO / Bracket */}
@@ -2975,6 +3102,11 @@ function TradePanel({
                     placeholder={hasData ? "" : "Sin precio"}
                   />
                 </div>
+                {bracketError && (
+                  <div className="rounded-md border border-[#e3b341]/30 bg-[#e3b341]/10 px-2 py-1.5 text-[10px] text-[#e3b341]">
+                    {bracketError}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -2982,16 +3114,24 @@ function TradePanel({
         {/* BUY / SELL — @ MARKET (limit/stop se deshabilita hasta cablear su ejecución) */}
         <div className="grid grid-cols-2 gap-2 px-3 pt-2 shrink-0">
           <Button
-            disabled={!ordersEnabled || !hasData || submitting || isPending}
-            onClick={() => onSubmit("buy")}
-            className="h-12 bg-[#1aa86a] hover:bg-[#1fbd78] text-white font-bold text-[13px] tracking-wide disabled:opacity-40"
+            disabled={!ordersEnabled || !hasData || submitting || isPending || !!bracketError}
+            title={bracketError ?? (bracketOn && ticketSide !== "buy" ? "Primer clic: reorienta el bracket a compra" : undefined)}
+            onClick={() => onSideButton("buy")}
+            className={cn(
+              "h-12 bg-[#1aa86a] hover:bg-[#1fbd78] text-white font-bold text-[13px] tracking-wide disabled:opacity-40 transition-opacity",
+              ticketSide === "buy" ? "ring-2 ring-[#5ce3ab]/50" : "opacity-60",
+            )}
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : `BUY +${contractCount} @ ${orderTypeLabel}`}
           </Button>
           <Button
-            disabled={!ordersEnabled || !hasData || submitting || isPending}
-            onClick={() => onSubmit("sell")}
-            className="h-12 bg-[#e0413d] hover:bg-[#ef5350] text-white font-bold text-[13px] tracking-wide disabled:opacity-40"
+            disabled={!ordersEnabled || !hasData || submitting || isPending || !!bracketError}
+            title={bracketError ?? (bracketOn && ticketSide !== "sell" ? "Primer clic: reorienta el bracket a venta" : undefined)}
+            onClick={() => onSideButton("sell")}
+            className={cn(
+              "h-12 bg-[#e0413d] hover:bg-[#ef5350] text-white font-bold text-[13px] tracking-wide disabled:opacity-40 transition-opacity",
+              ticketSide === "sell" ? "ring-2 ring-[#ff8580]/50" : "opacity-60",
+            )}
           >
             {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : `SELL -${contractCount} @ ${orderTypeLabel}`}
           </Button>
