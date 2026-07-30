@@ -2893,19 +2893,46 @@ function TradePanel({
     const posQty = Math.abs(Number(activePosition?.qty) || 0);
     const posAvg = Number(activePosition?.avgPrice) || 0;
     const sameSide = !!activePosition && (activePosition.side === "LONG") === (ticketSide === "buy");
+    // Precio al que REALMENTE entrarían los contratos nuevos: una compra se llena
+    // al ask y una venta al bid. Usar `last` para las dos daba un precio medio
+    // optimista por medio spread en cada añadido.
+    const addFillPx =
+      ticketSide === "buy"
+        ? askPrice > 0
+          ? askPrice
+          : lastPrice
+        : bidPrice > 0
+          ? bidPrice
+          : lastPrice;
+    // Precio medio PONDERADO de la posición resultante:
+    //   (contratos_viejos × precio_viejo + contratos_nuevos × precio_nuevo)
+    //   ────────────────────────────────────────────────────────────────────
+    //                    contratos_viejos + contratos_nuevos
+    const blendedAvg =
+      posQty > 0 && posAvg > 0 && addFillPx > 0
+        ? (posQty * posAvg + contractCount * addFillPx) / (posQty + contractCount)
+        : 0;
+    // Cuánto se mueve el precio medio en tu contra/favor al promediar, y cuánto
+    // vale en dólares la exposición añadida: promediar NO es gratis, multiplica
+    // el riesgo por cada contrato nuevo.
+    const usdPerPoint = tickSpec && tickSpec.tickSize > 0 ? tickSpec.tickValue / tickSpec.tickSize : 0;
+    const addedExposureUsd = usdPerPoint > 0 && addFillPx > 0 ? contractCount * addFillPx * usdPerPoint : 0;
     const positionEffect = !activePosition
       ? null
       : sameSide
         ? `Promediar · ${posQty} → ${posQty + contractCount} contratos${
-            posAvg > 0 && hasData
-              ? ` · precio medio ≈ ${((posQty * posAvg + contractCount * lastPrice) / (posQty + contractCount)).toFixed(priceDec)}`
-              : ""
+            blendedAvg > 0 ? ` · precio medio ${posAvg.toFixed(priceDec)} → ${blendedAvg.toFixed(priceDec)}` : ""
           }`
         : contractCount < posQty
           ? `Reduce · ${posQty} → ${posQty - contractCount} contratos`
           : contractCount === posQty
             ? "Cierra la posición completa"
             : `Invierte · queda ${contractCount - posQty} ${ticketSide === "buy" ? "LONG" : "SHORT"}`;
+    // Aviso de riesgo solo al AÑADIR: es donde crece la exposición.
+    const averagingRisk =
+      sameSide && addedExposureUsd > 0
+        ? `Añades ${contractCount} contrato(s) · exposición +$${addedExposureUsd.toLocaleString("es-ES", { maximumFractionDigits: 0 })} · el riesgo sube con cada uno`
+        : null;
     const qtyPresets = [1, 3, 5, 10, 15];
     const secBtn = "h-9 rounded-md border border-white/12 bg-transparent text-[11px] font-semibold uppercase tracking-wide text-white/80 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed transition-colors";
     return (
@@ -2923,16 +2950,18 @@ function TradePanel({
           </div>
         )}
         <div className="px-3 pt-3 pb-2 space-y-3 overflow-y-auto flex-1">
-          {/* CONTRACTS — etiqueta fija del símbolo activo (se cambia desde las tabs/watchlist). */}
+          {/* Símbolo activo (se cambia desde las tabs/watchlist). Antes se rotulaba
+              "Contracts", que chocaba con el campo "# of Contracts" de abajo: dos
+              cosas distintas con el mismo nombre. */}
           <div>
-            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Contracts</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Contrato</div>
             <div className="flex items-center rounded-md border border-white/10 bg-[#151824] px-3 py-2 text-sm">
               <span className="truncate text-white/90">{symbol ? formatSymbolDisplay(symbol) : "Selecciona un símbolo"}</span>
             </div>
           </div>
           {/* ORDER TYPE — dropdown funcional Market / Limit / Stop */}
           <div>
-            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Order Type</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Tipo de orden</div>
             <div className="relative">
               <select
                 value={orderType}
@@ -2967,16 +2996,13 @@ function TradePanel({
           )}
           {/* # OF CONTRACTS */}
           <div>
-            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1"># of Contracts</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">N.º de contratos</div>
             <Input
               value={volume}
               inputMode="numeric"
               onChange={(e) => setVolume(e.target.value.replace(/[^\d]/g, ""))}
               className="h-9 bg-[#151824] border-white/10 text-white tabular-nums"
             />
-            <div className="text-[10px] text-white/40 mt-1 tabular-nums">
-              {contractCount} contrato(s)
-            </div>
           </div>
           {/* Quick-qty row */}
           <div className="flex items-center gap-1.5">
@@ -3010,7 +3036,7 @@ function TradePanel({
           </div>
           {/* Active Positions */}
           <div>
-            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Active Positions</div>
+            <div className="text-[10px] text-white/45 uppercase tracking-wide mb-1">Posición abierta</div>
             <div
               className={cn(
                 "rounded-md border px-3 py-2 text-sm text-center tabular-nums",
@@ -3019,7 +3045,7 @@ function TradePanel({
             >
               {activePosition
                 ? `${activePosition.side === "LONG" ? "LONG" : "SHORT"} ${activePosition.qty} @ ${posPx(activePosition.avgPrice)}`
-                : "No Active Positions"}
+                : "Sin posición abierta"}
             </div>
             {positionEffect && (
               <div
@@ -3030,6 +3056,11 @@ function TradePanel({
               >
                 {sameSide ? "\u2795 " : "\u2796 "}
                 {positionEffect}
+              </div>
+            )}
+            {averagingRisk && (
+              <div className="mt-1 rounded-md border border-[#e3b341]/25 bg-[#e3b341]/5 px-2 py-1 text-[10px] text-center text-[#e3b341]/90 tabular-nums">
+                {averagingRisk}
               </div>
             )}
           </div>
