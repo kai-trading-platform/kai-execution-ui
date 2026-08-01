@@ -192,6 +192,12 @@ export interface UpdateTradingPositionStopsPayload {
   takeProfit: number;
   dryRun?: boolean;
   confirmationText?: string | null;
+  /** QUITAR la pata en vez de moverla. Sin este flag no había forma de pedirlo:
+   *  un 0 significa "sin cambio", no "elimínalo". */
+  removeStopLoss?: boolean;
+  removeTakeProfit?: boolean;
+  /** Obligatoria para quitar el SL: deja la posición sin protección. */
+  confirmNaked?: boolean;
 }
 
 export interface UpdateTradingPositionStopsResult {

@@ -105,6 +105,9 @@ export function updateTradingPositionStops(
         takeProfit: payload.takeProfit,
         dryRun: payload.dryRun === false ? false : true,
         confirmationText: payload.confirmationText,
+        removeStopLoss: payload.removeStopLoss === true,
+        removeTakeProfit: payload.removeTakeProfit === true,
+        confirmNaked: payload.confirmNaked === true,
       },
     },
   );

@@ -883,18 +883,43 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
   );
 
   const handleUpdateStops = useCallback(
-    async (position: CopyTradingPosition, sl?: number | null, tp?: number | null) => {
+    async (
+      position: CopyTradingPosition,
+      sl?: number | null,
+      tp?: number | null,
+      // QUITAR una pata. Un 0 significa "sin cambio", no "elimínalo": hace falta
+      // pedirlo explícitamente para que un campo vacío no borre nunca un stop.
+      remove?: { sl?: boolean; tp?: boolean },
+    ) => {
       if (!dbAccountId) return;
       const isBuy = position.side === "LONG";
       const ref = position.currentPrice || position.avgPrice;
       const tpv = tp ?? 0;
       const slv = sl ?? 0;
+      const removeSl = remove?.sl === true;
+      const removeTp = remove?.tp === true;
+
+      // Quitar el stop deja la posición expuesta a todo el recorrido en contra.
+      // Se confirma con el operador ANTES de mandarlo; el backend lo vuelve a
+      // exigir por su cuenta (confirmNaked), esto no lo sustituye.
+      if (removeSl) {
+        const ok = await confirm({
+          title: "Quitar el Stop Loss",
+          description:
+            `La posición ${position.side} de ${formatSymbolDisplay(position.symbol)} se quedará ` +
+            `SIN protección automática: si el precio va en contra, nada la cierra.\n\n` +
+            `¿Seguro que quieres quitarlo?`,
+          confirmText: "Quitar el SL",
+          destructive: true,
+        });
+        if (!ok) return;
+      }
       // Validate sides before the broker rejects with "modify_rejected".
-      if (tpv > 0 && ref > 0 && ((isBuy && tpv <= ref) || (!isBuy && tpv >= ref))) {
+      if (!removeTp && tpv > 0 && ref > 0 && ((isBuy && tpv <= ref) || (!isBuy && tpv >= ref))) {
         toast.error("Take Profit inválido", { description: `Debe estar ${isBuy ? "por encima" : "por debajo"} del precio actual (${ref}).` });
         return;
       }
-      if (slv > 0 && ref > 0 && ((isBuy && slv >= ref) || (!isBuy && slv <= ref))) {
+      if (!removeSl && slv > 0 && ref > 0 && ((isBuy && slv >= ref) || (!isBuy && slv <= ref))) {
         toast.error("Stop Loss inválido", { description: `Debe estar ${isBuy ? "por debajo" : "por encima"} del precio actual (${ref}).` });
         return;
       }
@@ -904,15 +929,24 @@ export default function TradingTerminalPage({ forcedMode }: TradingTerminalPageP
           tradingAccountId: dbAccountId,
           stopLoss: slv,
           takeProfit: tpv,
+          removeStopLoss: removeSl,
+          removeTakeProfit: removeTp,
+          confirmNaked: removeSl,
           dryRun: false,
           confirmationText: REAL_CONFIRMATION_TEXT,
         });
-        toast.success(`Stops actualizados · #${position.id}`);
+        toast.success(
+          removeSl
+            ? `Stop Loss quitado · #${position.id}`
+            : removeTp
+              ? `Take Profit quitado · #${position.id}`
+              : `Stops actualizados · #${position.id}`,
+        );
       } catch (e) {
         toast.error(errorMessage(e, "No se pudieron actualizar los stops"));
       }
     },
-    [dbAccountId, updateStops],
+    [dbAccountId, updateStops, confirm],
   );
 
   const uiPositions = useMemo<CopyTradingPosition[]>(
@@ -2407,7 +2441,12 @@ function BottomPanel({
   equity: number | null;
   marginFree: number | null;
   onClose: (p: CopyTradingPosition) => void;
-  onUpdateStops: (p: CopyTradingPosition, sl: number | null, tp: number | null) => Promise<void>;
+  onUpdateStops: (
+    p: CopyTradingPosition,
+    sl: number | null,
+    tp: number | null,
+    remove?: { sl?: boolean; tp?: boolean },
+  ) => Promise<void>;
   orders: TradingOrder[];
   historyTrades: TradingHistoryItem[];
   onFocusTrade?: (t: TradingHistoryItem) => void;
@@ -2458,6 +2497,19 @@ function BottomPanel({
     setSaving(true);
     try {
       await onUpdateStops(edit, parseFloat(editSl) || null, parseFloat(editTp) || null);
+      setEdit(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+  // Quitar una pata es una acción APARTE de guardar: vaciar el campo significa
+  // "no lo toques", nunca "bórralo". Si no, un campo que se limpia sin querer
+  // dejaría la posición sin stop.
+  const removeLeg = async (leg: "sl" | "tp") => {
+    if (!edit) return;
+    setSaving(true);
+    try {
+      await onUpdateStops(edit, null, null, { [leg]: true });
       setEdit(null);
     } finally {
       setSaving(false);
@@ -2660,11 +2712,35 @@ function BottomPanel({
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[#2ed68d] mb-1">Take Profit</div>
-                <Input value={editTp} onChange={(e) => setEditTp(e.target.value)} placeholder="Take profit" className="h-9 bg-[#151824] border-white/10 text-white tabular-nums" />
+                <div className="flex items-center gap-2">
+                  <Input value={editTp} onChange={(e) => setEditTp(e.target.value)} placeholder="Take profit" className="h-9 flex-1 bg-[#151824] border-white/10 text-white tabular-nums" />
+                  <Button
+                    variant="outline"
+                    disabled={saving || !(Number(edit?.tp) > 0)}
+                    title={Number(edit?.tp) > 0 ? "Quitar el take profit de la posición" : "Esta posición no tiene take profit"}
+                    onClick={() => void removeLeg("tp")}
+                    className="h-9 shrink-0 border-white/10 bg-transparent px-3 text-[11px] text-white/70 hover:bg-white/5"
+                  >
+                    Quitar
+                  </Button>
+                </div>
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[#ef5350] mb-1">Stop Loss</div>
-                <Input value={editSl} onChange={(e) => setEditSl(e.target.value)} placeholder="Stop loss" className="h-9 bg-[#151824] border-white/10 text-white tabular-nums" />
+                <div className="flex items-center gap-2">
+                  <Input value={editSl} onChange={(e) => setEditSl(e.target.value)} placeholder="Stop loss" className="h-9 flex-1 bg-[#151824] border-white/10 text-white tabular-nums" />
+                  {/* Quitar el stop deja la posición SIN protección: se pide
+                      confirmación en el handler y el backend la vuelve a exigir. */}
+                  <Button
+                    variant="outline"
+                    disabled={saving || !(Number(edit?.sl) > 0)}
+                    title={Number(edit?.sl) > 0 ? "Quitar el stop loss — la posición quedará sin protección" : "Esta posición no tiene stop loss"}
+                    onClick={() => void removeLeg("sl")}
+                    className="h-9 shrink-0 border-[#e0413d]/40 bg-transparent px-3 text-[11px] text-[#ff8580] hover:bg-[#e0413d]/10"
+                  >
+                    Quitar
+                  </Button>
+                </div>
               </div>
               <div className="flex gap-2 pt-1">
                 <Button variant="outline" className="flex-1 border-white/10 bg-transparent" onClick={() => setEdit(null)}>Cancelar</Button>
