@@ -47,8 +47,44 @@ export class KaiDatafeed implements Datafeed {
   // chart duplicado (Bug B). Guardamos el borde para responder [] a esas peticiones.
   private readonly earliestServed = new Map<string, number>();
 
+  // Coalescencia de peticiones en vuelo: al montar, el chart pide el histórico
+  // y —por la hidratación de preferencias desde BD que re-fija el símbolo— se
+  // disparaba una SEGUNDA petición idéntica (20k velas, ~3,6 s c/u = ~6 s de
+  // "Cargando velas"). Compartimos la MISMA promesa mientras esté en vuelo para
+  // una clave (cuenta|ticker|tf|count|around) → una sola llamada HTTP. Se limpia al
+  // resolverse, así recargas posteriores vuelven a pedir fresco.
+  private readonly inFlight = new Map<string, Promise<Awaited<ReturnType<typeof fetchCandles>>>>();
+  // Doble clic en una ejecutada: el siguiente getHistoryKLineData pide velas
+  // centradas en ese timestamp (el store tiene historia; las últimas N no).
+  private focusAroundMs: number | null = null;
+
   constructor(deps: KaiDatafeedDeps) {
     this.deps = deps;
+  }
+
+  setFocusAround(aroundMs: number | null): void {
+    this.focusAroundMs =
+      aroundMs != null && Number.isFinite(aroundMs) && aroundMs > 0
+        ? Math.floor(aroundMs)
+        : null;
+    if (this.focusAroundMs != null) this.earliestServed.clear();
+  }
+
+  private coalescedFetch(
+    accountId: string,
+    ticker: string,
+    timeframe: string,
+    count: number,
+    aroundMs?: number,
+  ): Promise<Awaited<ReturnType<typeof fetchCandles>>> {
+    const k = `${accountId}|${ticker}|${timeframe}|${count}|${aroundMs ?? 0}`;
+    const existing = this.inFlight.get(k);
+    if (existing) return existing;
+    const p = fetchCandles(accountId, ticker, timeframe, count, aroundMs).finally(() => {
+      this.inFlight.delete(k);
+    });
+    this.inFlight.set(k, p);
+    return p;
   }
 
   async searchSymbols(search?: string): Promise<SymbolInfo[]> {
@@ -98,7 +134,13 @@ export class KaiDatafeed implements Datafeed {
     let candles: Awaited<ReturnType<typeof fetchCandles>> = [];
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        candles = await fetchCandles(accountId, symbol.ticker, period.text, HISTORY_COUNT);
+        candles = await this.coalescedFetch(
+          accountId,
+          symbol.ticker,
+          period.text,
+          HISTORY_COUNT,
+          this.focusAroundMs ?? undefined,
+        );
       } catch {
         candles = [];
       }

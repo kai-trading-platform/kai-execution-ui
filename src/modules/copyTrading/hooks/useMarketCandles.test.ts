@@ -91,4 +91,16 @@ describe("fetchCandles routing", () => {
 
     expect(nestAuthFetch.mock.calls.length).toBeLessThanOrEqual(7);
   });
+
+  it("around pide una sola ventana centrada en el trade", async () => {
+    nestAuthFetch.mockResolvedValueOnce([bar]);
+    const around = 1_700_123_000_000;
+
+    await fetchCandles("acc", "MNQ", "5m", 20000, around);
+
+    expect(nestAuthFetch).toHaveBeenCalledTimes(1);
+    const url = nestAuthFetch.mock.calls[0][0] as string;
+    expect(url).toContain("count=20000");
+    expect(url).toContain(`around=${around}`);
+  });
 });

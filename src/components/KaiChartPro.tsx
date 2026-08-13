@@ -432,18 +432,26 @@ export function KaiChartPro({
     // Volvemos a mostrar el overlay: setSymbol dispara un getHistoryKLineData
     // nuevo y no queremos que asome la "bolsa" durante el re-fetch.
     setLoadingHistory(true);
+    // Si el cambio de símbolo viene de un doble clic en ejecutadas, pedir
+    // la ventana del trade (no solo las últimas N).
+    if (focusTrade && currentSymbolInfo.ticker === focusTrade.symbol) {
+      const exit = Number.isFinite(focusTrade.to) ? focusTrade.to : focusTrade.from;
+      const mid = (focusTrade.from + exit) / 2;
+      if (Number.isFinite(mid)) datafeedRef.current?.setFocusAround(mid);
+    }
     chartRef.current.setSymbol(currentSymbolInfo);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSymbolInfo?.ticker, accountId]);
 
-  // Doble clic en un trade de ÓRDENES → llevar el chart a ese momento. Si el
-  // símbolo cambió, setSymbol recarga el histórico de forma ASÍNCRONA y
-  // applyNewData resetea la vista al final; por eso esperamos a que la data se
-  // ESTABILICE (misma longitud + último timestamp en dos sondeos seguidos)
-  // antes de hacer scroll. Timeout ~3.6s → best-effort al borde (trade fuera de
-  // rango cargado). El nonce permite re-disparar el mismo trade.
+  // Doble clic en un trade de ÓRDENES → cargar velas EN ESA FECHA (el store
+  // las tiene; las últimas N del chart no) y centrar. Si el símbolo cambió,
+  // esperamos a que setSymbol deje el ticker igual al del trade. El nonce
+  // permite re-disparar el mismo trade.
   useEffect(() => {
     if (!focusTrade || !Number.isFinite(focusTrade.from)) return;
+    if (currentSymbolInfo?.ticker && currentSymbolInfo.ticker !== focusTrade.symbol) {
+      return;
+    }
     const exit = Number.isFinite(focusTrade.to) ? focusTrade.to : focusTrade.from;
     const mid = (focusTrade.from + exit) / 2;
     let cancelled = false;
@@ -491,12 +499,32 @@ export function KaiChartPro({
       attempts += 1;
       setTimeout(tick, 150);
     };
-    tick();
+    const loadAround = async () => {
+      const df = datafeedRef.current;
+      const symbolInfo = currentSymbolInfo;
+      if (df && symbolInfo && Number.isFinite(mid)) {
+        df.setFocusAround(mid);
+        try {
+          const d = await df.getHistoryKLineData(
+            symbolInfo,
+            periodForTimeframe(timeframe),
+          );
+          if (cancelled) return;
+          const chart = chartRef.current?.getChart?.() as { applyNewData?: (bars: unknown[], more: boolean) => void };
+          if (d.length > 0) chart?.applyNewData?.(d, true);
+        } catch {
+          /* el scroll de abajo es best-effort */
+        }
+        df.setFocusAround(null);
+      }
+      tick();
+    };
+    void loadAround();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusTrade?.nonce]);
+  }, [focusTrade?.nonce, currentSymbolInfo?.ticker]);
 
   // Captura de INDICADORES → localStorage (`kai:chart-indicators`) para que el
   // sync de preferencias los suba a la BD. El fork no emite un evento al

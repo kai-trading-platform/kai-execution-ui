@@ -86,6 +86,7 @@ async function fetchRawTf(
   symbol: string,
   mt5Tf: string,
   limit: number,
+  aroundMs?: number,
 ): Promise<MarketCandle[]> {
   // MT5 devuelve VACÍO si se le piden MÁS velas de las que tiene (no clampea).
   // El fallback prueba counts decrecientes y usa el primero que trae datos. Los
@@ -98,16 +99,24 @@ async function fetchRawTf(
   // 14 devolvían vacío una tras otra y el chart se quedaba MINUTOS girando. Con
   // 7 escalones y 8 s por intento el peor caso baja de minutos a ~1 min, y un error corta
   // el bucle en el acto (insistir con otro `count` no lo va a arreglar).
-  const candidates = Array.from(
-    new Set([limit, 10000, 5000, 1000, 300, 50, 5].filter((n) => n > 0 && n <= limit)),
-  );
+  const aroundQ =
+    aroundMs != null && Number.isFinite(aroundMs) && aroundMs > 0
+      ? `&around=${Math.floor(aroundMs)}`
+      : "";
+  // Con `around` pedimos UNA ventana centrada en el trade: la escalera de
+  // counts más chicos devolvería las últimas N (no esa fecha).
+  const candidates = aroundQ
+    ? [limit]
+    : Array.from(
+        new Set([limit, 10000, 5000, 1000, 300, 50, 5].filter((n) => n > 0 && n <= limit)),
+      );
   let candles: RawCandle[] = [];
   const deadline = Date.now() + RATES_TOTAL_BUDGET_MS;
   for (const count of candidates) {
     if (Date.now() > deadline) break; // se agotó el presupuesto: no seguir bajando
     try {
       candles = await nestAuthFetch<RawCandle[]>(
-        `/api/mt5-accounts/${accountId}/rates/${encodeURIComponent(symbol)}?timeframe=${mt5Tf}&count=${count}`,
+        `/api/mt5-accounts/${accountId}/rates/${encodeURIComponent(symbol)}?timeframe=${mt5Tf}&count=${count}${aroundQ}`,
         { signal: AbortSignal.timeout(RATES_ATTEMPT_TIMEOUT_MS) },
       );
     } catch (err) {
@@ -157,15 +166,22 @@ export async function fetchCandles(
   accountId: string,
   symbol: string,
   timeframe: string,
-  limit: number = 300
+  limit: number = 300,
+  aroundMs?: number,
 ): Promise<MarketCandle[]> {
   const tf = TIMEFRAME_MAP[timeframe] ?? timeframe;
-  let out = await fetchRawTf(accountId, symbol, tf, limit);
+  let out = await fetchRawTf(accountId, symbol, tf, limit, aroundMs);
 
   // Si el TF no estándar (10m/2h) vino vacío, agregamos desde el TF base.
   if (out.length === 0 && AGG_FALLBACK[timeframe]) {
     const { base, ratio, bucketMs } = AGG_FALLBACK[timeframe];
-    const baseCandles = await fetchRawTf(accountId, symbol, base, Math.min(limit * ratio, 20_000));
+    const baseCandles = await fetchRawTf(
+      accountId,
+      symbol,
+      base,
+      Math.min(limit * ratio, 20_000),
+      aroundMs,
+    );
     if (baseCandles.length > 0) out = aggregateCandles(baseCandles, bucketMs);
   }
 
