@@ -35,7 +35,9 @@ interface ActiveSub {
   lastBar: KLineData | null;
 }
 
-const HISTORY_COUNT = 20_000;
+// Primera pintura: 3k velas (~2 días en M1, meses en M5). 20k bloqueaba
+// el terminal 3–6 s. El scroll a la izquierda pide más si hace falta.
+const HISTORY_COUNT = 3_000;
 
 export class KaiDatafeed implements Datafeed {
   private readonly deps: KaiDatafeedDeps;
